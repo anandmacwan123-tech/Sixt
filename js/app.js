@@ -137,6 +137,7 @@
         if (p.el.matches(':hover') || p.el.contains(document.activeElement)) return;
         p.on = false;
         document.body.classList.remove(p.cls);
+        if (name === 'tray') { tray.classList.remove('open-shapes'); $('objBtn').setAttribute('aria-expanded', 'false'); }
       }, 450);
     }
   }
@@ -165,7 +166,10 @@
   // ------------------------------------------------------------------ controls
   const ui = { intensity: $('intensity'), reflect: $('reflect'), haze: $('haze'), sweep: $('sweepBtn'), stops: [$('stop0'), $('stop1'), $('stop2')] };
   let paramsChanged = false;
+  let objectsMoved = false;
   let saveTimer = 0;
+  let camNow = [0, EYE_H + current * FLOOR_H, 0];
+  let fade = 0;
 
   // floor buttons, top floor first; each shows its own gradient
   const floorButtons = [];
@@ -224,9 +228,27 @@
       renderer.invalidateProbes(lift.to, false);
     }
     paramsChanged = true;
+    scheduleSave();
+  }
+  function scheduleSave() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => Floors.save(floors), 400);
   }
+
+  // interior objects on this floor
+  const objects = window.AtriumObjects.create({
+    canvas, renderer, floors,
+    floor: () => lift.to,
+    camPos: () => camNow,
+    busy: () => lift.moving || fade < 1,
+    changed(edited) {
+      objectsMoved = true;
+      if (edited) {
+        renderer.invalidateProbes(lift.to, false);
+        scheduleSave();
+      }
+    },
+  });
 
   ['intensity', 'reflect', 'haze'].forEach((key) => {
     const el = ui[key];
@@ -263,6 +285,7 @@
   function goTo(target) {
     target = clamp(target, 0, floors.length - 1);
     if (target === lift.to) return;
+    objects.floorChanged();
     lift.from = lift.pos;
     lift.to = target;
     lift.t0 = performance.now();
@@ -284,6 +307,7 @@
   canvas.addEventListener('touchstart', (e) => { touchY = e.touches[0].clientY; }, { passive: true });
   canvas.addEventListener('touchend', (e) => {
     if (touchY === null) return;
+    if (objects.takeTouch()) { touchY = null; return; }
     const dy = e.changedTouches[0].clientY - touchY;
     touchY = null;
     if (Math.abs(dy) > 50) goTo(lift.to + (dy < 0 ? 1 : -1));
@@ -316,7 +340,6 @@
 
   // ------------------------------------------------------------------ loop
   let started = false;
-  let fade = 0;
   let dolly = 0;
   let last = performance.now();
   let frameCount = 0;
@@ -368,6 +391,7 @@
       const dollyTarget = lift.moving ? DOLLY * s * s * (3 - 2 * s) : 0;
       dolly = TEST_FRAMES ? dollyTarget : dolly + (dollyTarget - dolly) * (1 - Math.exp(-dt / 220));
       const camPos = [0, EYE_H + lift.pos * FLOOR_H, -dolly];
+      camNow = camPos;
       const f = floors[lift.to];
       renderer.render({
         time,
@@ -375,6 +399,7 @@
         visibleFloors: vis,
         pulse: pulse(time),
         paramsChanged,
+        objectsMoved,
         debug: DEBUG,
         exposure: Floors.EXPOSURE,
         bloomStrength: 0.12 + 0.16 * f.haze,
@@ -386,6 +411,7 @@
         lift: 0.05,
       });
       paramsChanged = false;
+      objectsMoved = false;
       if (fade >= 1) adaptResolution(dt, now);
       frameCount++;
       if (TEST_FRAMES && frameCount >= TEST_FRAMES) { window.__done = true; return; }
@@ -400,5 +426,5 @@
   syncUI();
   requestAnimationFrame(frame);
 
-  window.__atrium = { floors, renderer, goTo, lift };
+  window.__atrium = { floors, renderer, goTo, lift, objects };
 })();

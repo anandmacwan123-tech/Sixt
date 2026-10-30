@@ -49,6 +49,12 @@ uniform sampler2D uLut;    // gradient texture: row 2f = strip A, row 2f+1 = str
 uniform int uNumSlits;     // 12 (uniform so compilers keep the loops rolled)
 uniform int uFogSteps;
 uniform int uQuality;      // 1: ray traced reflections + shadows, 0: analytic fallback for slow GPUs
+// placed objects (world space): centre + width, rotation quaternion, shape / roughness / half height / bound
+#define MAX_OBJ 24
+uniform vec4 uObjP[MAX_OBJ];
+uniform vec4 uObjR[MAX_OBJ];
+uniform vec4 uObjM[MAX_OBJ];
+uniform int uNumObj;
 
 // ---------------------------------------------------------------- geometry
 // Local floor space: x = lateral, y = height above floor, z = depth (towards the end panel).
@@ -110,6 +116,9 @@ const float SECTION_RAD = 0.0025;
 #define MAT_BACK 5
 #define MAT_PANELBODY 6
 #define MAT_SKY 7
+#define MAT_OBJ 8
+const float OBJ_ALB = 0.78;       // placed objects: blank, neutral, untextured
+const float OBJ_F0 = 0.04;
 
 // ---------------------------------------------------------------- random
 uint pcgHash(uint v) {
@@ -196,8 +205,64 @@ float panelSDF(vec3 p) {
 int floorOf(float y) { return int(floor(y / FLOOR_H)); }
 vec3 toLocal(vec3 pw, int f) { return vec3(pw.x, pw.y - float(f) * FLOOR_H, pw.z); }
 
-// Scene distance (positive in air).
-float map(vec3 pw) {
+// ---------------------------------------------------------------- placed objects
+// Each shape is centred on its bounding centre, local +y along the normal of the surface it
+// stands on; w = width (m), hh = half height (m). Kept in step with js/scene.js.
+float sdCappedCone(vec3 p, float h, float r1, float r2) {
+  vec2 q = vec2(length(p.xz), p.y);
+  vec2 k1 = vec2(r2, h), k2 = vec2(r2 - r1, 2.0 * h);
+  vec2 ca = vec2(q.x - min(q.x, (q.y < 0.0) ? r1 : r2), abs(q.y) - h);
+  vec2 cb = q - k1 + k2 * clamp(dot(k1 - q, k2) / dot(k2, k2), 0.0, 1.0);
+  float s = (cb.x < 0.0 && ca.y < 0.0) ? -1.0 : 1.0;
+  return s * sqrt(min(dot(ca, ca), dot(cb, cb)));
+}
+float sdObj(int k, vec3 q, float w, float hh) {
+  if (k == 0) {                       // sphere (an ellipsoid when stretched)
+    vec3 r = vec3(0.5 * w, hh, 0.5 * w);
+    float k0 = length(q / r), k1 = length(q / (r * r));
+    return k0 * (k0 - 1.0) / k1;
+  }
+  if (k == 1) {                       // block
+    float rr = min(0.06 * w, 0.5 * hh);
+    return sdBox(q, vec3(0.5 * w, hh, 0.5 * w) - rr) - rr;
+  }
+  if (k == 2) {                       // cylinder
+    float rr = min(0.05 * w, 0.5 * hh);
+    vec2 d = vec2(length(q.xz) - 0.42 * w + rr, abs(q.y) - hh + rr);
+    return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - rr;
+  }
+  if (k == 3) {                       // pill
+    float r = min(0.3 * w, hh);
+    q.y -= clamp(q.y, r - hh, hh - r);
+    return length(q) - r;
+  }
+  if (k == 4) {                       // ring
+    float rr = min(0.11 * w, hh);
+    vec2 d = vec2(abs(length(q.xz) - 0.4 * w) - 0.12 * w + rr, abs(q.y) - hh + rr);
+    return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - rr;
+  }
+  float rr = min(0.035 * w, 0.5 * hh);  // cone
+  return sdCappedCone(q, hh - rr, 0.45 * w - rr, 0.02 * w) - rr;
+}
+vec3 qrotInv(vec4 q, vec3 v) { vec3 u = -q.xyz; return v + 2.0 * cross(u, cross(u, v) + q.w * v); }
+
+// Distance to the nearest object closer than dmax (dmax if none); id = its index or -1.
+float objMap(vec3 pw, float dmax, out int id) {
+  float d = dmax;
+  id = -1;
+  for (int i = 0; i < MAX_OBJ; i++) {
+    if (i >= uNumObj) break;
+    vec4 P = uObjP[i], M = uObjM[i];
+    vec3 r = pw - P.xyz;
+    if (length(r) - M.w > d) continue;
+    float di = sdObj(int(M.x), qrotInv(uObjR[i], r), P.w, M.z);
+    if (di < d) { d = di; id = i; }
+  }
+  return d;
+}
+
+// Room distance (positive in air).
+float roomMap(vec3 pw) {
   float n = floor(pw.y / FLOOR_H);
   vec3 p = vec3(pw.x, pw.y - n * FLOOR_H, pw.z);
   float air = pw.z - Z_FRONT;
@@ -207,6 +272,13 @@ float map(vec3 pw) {
     dp = panelSDF(p);
   }
   return min(-air, dp);
+}
+
+// Scene distance (positive in air).
+float map(vec3 pw) {
+  float d = roomMap(pw);
+  if (uNumObj > 0) { int id; d = objMap(pw, d, id); }
+  return d;
 }
 
 vec3 calcNormal(vec3 p) {
@@ -513,7 +585,10 @@ Surf makeSurf(vec3 pw) {
   s.f = clamp(floorOf(pw.y), 0, NF - 1);
   s.pl = toLocal(pw, s.f);
   s.n = calcNormal(pw);
-  s.mat = materialAt(s.pl, s.n, s.slitId, s.slitUV);
+  int oi = -1;
+  if (uNumObj > 0) objMap(pw, roomMap(pw), oi);
+  if (oi >= 0) { s.mat = MAT_OBJ; s.slitId = float(oi); s.slitUV = vec2(0.0); }
+  else s.mat = materialAt(s.pl, s.n, s.slitId, s.slitUV);
   return s;
 }
 
@@ -538,11 +613,12 @@ void shadeSecondary(Surf s, bool emitDirect, float panelVis, out vec3 Ls, out ve
   if (s.mat == MAT_PANEL) { if (emitDirect) Ls = panelEmission(s.pl, s.f); return; }
   if (s.mat == MAT_SKY) { Ls = skyEmission(s.pl, s.f); return; }
   if (s.mat == MAT_SECTION || s.mat == MAT_PANELBODY) { Ls = sectionGlow(s.f); return; }
-  vec3 alb = s.mat == MAT_SLIT ? vec3(SLIT_ALB) : uAlbedo[s.f] * (s.mat == MAT_BACK ? BACK_ALB : endShade(s.pl));
+  vec3 alb = s.mat == MAT_SLIT ? vec3(SLIT_ALB) : s.mat == MAT_OBJ ? vec3(OBJ_ALB)
+           : uAlbedo[s.f] * (s.mat == MAT_BACK ? BACK_ALB : endShade(s.pl));
   vec4 gi = giSample(s.f, s.pl, s.n) * giShade(s.pl);
   vec3 Es = directStatic(s.pl, s.n, s.f, panelVis) + gi.rgb;
   vec3 Et = directSlit(s.pl, s.n) + gi.a * uAlbedo[s.f];
-  Ls = alb * (1.0 / PI) * Es + ceilGlow(s.pl, s.n, s.f);
+  Ls = alb * (1.0 / PI) * Es + (s.mat == MAT_OBJ ? vec3(0.0) : ceilGlow(s.pl, s.n, s.f));
   Lt = alb * (1.0 / PI) * Et;
   if (s.mat == MAT_SLIT && emitDirect) Lt += SLIT_COL * SLIT_RAD;
 }
@@ -589,6 +665,7 @@ uniform sampler2D uProbe1;
 uniform int uProbeFloor0;
 uniform int uProbeFloor1;
 uniform int uDebug;
+uniform int uObjSel;           // highlighted object (selected / being placed), -1 for none
 
 layout(location = 0) out vec4 outStatic;
 layout(location = 1) out vec4 outSlit;
@@ -677,10 +754,13 @@ void main() {
       Ls = sectionGlow(s.f);
     } else {
       vec3 n = s.n;
-      vec3 alb = uAlbedo[s.f] * (s.mat == MAT_BACK ? BACK_ALB : endShade(s.pl));
+      bool isObj = s.mat == MAT_OBJ;
+      int oi = int(s.slitId);
+      vec3 alb = isObj ? vec3(OBJ_ALB) : uAlbedo[s.f] * (s.mat == MAT_BACK ? BACK_ALB : endShade(s.pl));
       float NoV = max(dot(n, V), 1e-3);
-      float rough = surfRough(s.f, n, s.mat);
-      float specW = envBRDF(surfF0(s.f), rough, NoV) * mix(0.12, 1.0, smoothstep(0.2, 0.9, endShade(s.pl)));
+      float rough = isObj ? uObjM[oi].y : surfRough(s.f, n, s.mat);
+      float specW = isObj ? envBRDF(OBJ_F0, rough, NoV)
+                          : envBRDF(surfF0(s.f), rough, NoV) * mix(0.12, 1.0, smoothstep(0.2, 0.9, endShade(s.pl)));
       float ao = calcAO(s.pw, n);
       vec4 gi = giSample(s.f, s.pl, n) * giShade(s.pl);
       float ffp = panelFF(s.pl, n);
@@ -689,8 +769,10 @@ void main() {
       vec3 Es = Edir + gi.rgb * ao;
       vec3 Et = directSlit(s.pl, n) + gi.a * uAlbedo[s.f] * ao;
       vec3 kd = (1.0 - specW) * alb * (1.0 / PI);
-      Ls = kd * Es + ceilGlow(s.pl, n, s.f);
+      Ls = kd * Es + (isObj ? vec3(0.0) : ceilGlow(s.pl, n, s.f));
       Lt = kd * Et;
+      // selected object: a soft white rim
+      if (isObj && oi == uObjSel) Ls += vec3(0.5) * pow(1.0 - NoV, 3.0);
 
       float alpha = max(rough * rough, 0.0008);
       vec3 R = reflect(-V, n);
@@ -722,7 +804,7 @@ void main() {
       } else {
         // fallback: blurred environment from the GI volume + analytic panel mirror
         vec4 gr = giSample(s.f, s.pl, R);
-        Rs = gr.rgb * (1.0 / PI) + panelMirror(s, V);
+        Rs = gr.rgb * (1.0 / PI) + (isObj ? vec3(0.0) : panelMirror(s, V));
         Rt = gr.a * uAlbedo[s.f] * (1.0 / PI);
       }
       float sig = 1.5 * alpha + 0.004;
@@ -789,7 +871,7 @@ void main() {
     else if (w.z < 0.0) s = frontSurf(pw, w);
     else continue;
     float vis = 1.0;
-    if (s.mat == MAT_ROOM || s.mat == MAT_BACK || s.mat == MAT_SLIT) {
+    if (s.mat == MAT_ROOM || s.mat == MAT_BACK || s.mat == MAT_SLIT || s.mat == MAT_OBJ) {
       vis = panelFF(s.pl, s.n) > 1e-4 ? panelVisibility(s.pw, s.pl, s.n, vec2(rand01(seed), rand01(seed))) : 0.0;
     }
     vec3 Ls, Lt;

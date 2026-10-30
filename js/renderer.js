@@ -9,6 +9,7 @@
   const NUM_SLITS = 12;
   const PROBE_W = 78, PROBE_H = 192;
   const BLOOM_LEVELS = 6;
+  const MAX_OBJ = 24;     // objects uploaded per pass (the two visible floors)
 
   // Reference photograph framing (2000 x 1449, focal 1875 px, vanishing point at 996, 747).
   const REF = { w: 2000, h: 1449, f: 1875, cx: 996, cyFromBottom: 1449 - 747 };
@@ -87,6 +88,33 @@
       this.numFloors = NF;
       this.quality = this.opts.quality === undefined ? 1 : this.opts.quality;
       this.insetBottom = 0;
+      // placed objects, per floor (resolved to world space, see AtriumScene.resolve)
+      this.objects = [];
+      this.objSel = null;   // { floor, index } highlighted object
+      this.objBuf = { p: new Float32Array(MAX_OBJ * 4), r: new Float32Array(MAX_OBJ * 4), m: new Float32Array(MAX_OBJ * 4) };
+    }
+
+    setObjects(perFloor, sel) {
+      this.objects = perFloor;
+      this.objSel = sel || null;
+    }
+
+    // Upload the objects of the given floors; returns the slot of the highlighted one (or -1).
+    bindObjects(p, floorList) {
+      const b = this.objBuf;
+      let n = 0, sel = -1;
+      for (const f of floorList) {
+        const list = this.objects[f] || [];
+        for (let i = 0; i < list.length && n < MAX_OBJ; i++, n++) {
+          const o = list[i];
+          b.p.set([o.c[0], o.c[1], o.c[2], o.w], n * 4);
+          b.r.set(o.q, n * 4);
+          b.m.set([o.shape, o.rough, o.hh, o.bound], n * 4);
+          if (this.objSel && this.objSel.floor === f && this.objSel.index === i) sel = n;
+        }
+      }
+      p.f4v('uObjP', b.p).f4v('uObjR', b.r).f4v('uObjM', b.m).i1('uNumObj', n);
+      return sel;
     }
 
     // Lower part of the output covered by UI (output pixels): the vanishing point is centred above it.
@@ -203,6 +231,7 @@
         const src = st.pair[st.cur], dst = st.pair[1 - st.cur];
         const p = this.programs.probe.use();
         this.bindCommon(p, time, this.probeFrame++);
+        this.bindObjects(p, [f]);
         p.tex('uProbePrev', 0, src.tex).i1('uProbeFloor', f)
           .f1('uProbeAlpha', Math.max(1 / (st.updates + 1), 0.06)).i1('uProbeRays', this.opts.probeRays);
         dst.bind();
@@ -231,6 +260,7 @@
       const moved = this.prevCam && (Math.abs(this.prevCam[1] - st.camPos[1]) > 1e-5 || Math.abs(this.prevCam[2] - st.camPos[2]) > 1e-5);
       if (moved) this.accum = 0;
       if (st.paramsChanged) this.accum = Math.min(this.accum, 3);
+      if (st.objectsMoved) this.accum = Math.min(this.accum, 1);
       const n = this.frameIndex % 16;
       const jx = halton(n + 1, 2) - 0.5, jy = halton(n + 1, 3) - 0.5;
 
@@ -238,6 +268,7 @@
       const pa = st.visibleFloors[0], pb = st.visibleFloors.length > 1 ? st.visibleFloors[1] : st.visibleFloors[0];
       let p = this.programs.main.use();
       this.bindCommon(p, time, this.frameIndex);
+      p.i1('uObjSel', this.bindObjects(p, pa === pb ? [pa] : [pa, pb]));
       p.f3('uCamPos', st.camPos[0], st.camPos[1], st.camPos[2]).f2('uRes', iw, ih).f1('uFocal', cam.focal)
         .f2('uPrincipal', cam.cx, cam.cy).f2('uJitter', jx, jy).i1('uDebug', st.debug || 0)
         .tex('uProbe0', 0, this.probes[pa].pair[this.probes[pa].cur].tex).i1('uProbeFloor0', pa)

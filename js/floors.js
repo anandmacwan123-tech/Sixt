@@ -174,7 +174,20 @@
     const f = Object.assign({ map: FLOOR_MAPS[i % FLOOR_MAPS.length], custom: null }, DEFAULTS, saved || {});
     if (f.map !== 'custom' && !BY_ID[f.map]) f.map = FLOOR_MAPS[i % FLOOR_MAPS.length];
     if (f.map === 'custom' && (!Array.isArray(f.custom) || f.custom.length < 2)) f.map = FLOOR_MAPS[i % FLOOR_MAPS.length];
+    f.objects = cleanObjects(saved && saved.objects);
     return Object.assign(f, deriveColors(f));
+  }
+
+  // placed objects: { shape, p: base point (floor space), n: surface normal, spin, size, stretch, rough }
+  function cleanObjects(list) {
+    if (!Array.isArray(list)) return [];
+    const num = (v, d) => (typeof v === 'number' && isFinite(v) ? v : d);
+    const vec = (v) => Array.isArray(v) && v.length === 3 && v.every((x) => typeof x === 'number' && isFinite(x));
+    return list.filter((o) => o && vec(o.p) && vec(o.n)).slice(0, 12).map((o) => ({
+      shape: Math.min(5, Math.max(0, Math.round(num(o.shape, 0)))),
+      p: o.p.slice(), n: o.n.slice(),
+      spin: num(o.spin, 0), size: num(o.size, 0.6), stretch: num(o.stretch, 1), rough: num(o.rough, 0.35),
+    }));
   }
 
   function load() {
@@ -188,13 +201,16 @@
 
   function save(floors) {
     try {
-      const data = floors.map((f) => ({ map: f.map, custom: f.custom, intensity: f.intensity, reflect: f.reflect, haze: f.haze, slitGlow: f.slitGlow, sweep: f.sweep }));
+      const data = floors.map((f) => ({ map: f.map, custom: f.custom, intensity: f.intensity, reflect: f.reflect, haze: f.haze, slitGlow: f.slitGlow, sweep: f.sweep, objects: f.objects }));
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     } catch (e) { /* storage unavailable: settings last for this visit only */ }
   }
 
+  // back to the floor's default look; its objects stay
   function reset(floors, i) {
+    const objects = floors[i].objects;
     floors[i] = makeFloor(i, null);
+    floors[i].objects = objects;
     return floors[i];
   }
 

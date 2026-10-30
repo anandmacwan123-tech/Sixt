@@ -29,9 +29,29 @@ screens, tap the small handle on an edge instead.
   - the 15 DepthVideo colourways
   - three colour dots (light, middle, dark) that turn the floor into a custom gradient
   - depth sweep on or off
-  - reset the floor
+  - reset the floor (its objects stay)
+  - insert an object (the cube with a plus)
 
 Settings are saved per floor in the browser (`localStorage`).
+
+## Interior objects
+
+The insert button opens six blank shapes: sphere, block, cylinder, pill, ring and cone. Pick one
+and it follows the pointer over the floor, walls and ceiling, standing on whatever surface is under
+it (including other objects, so things can be stacked). Click to place it.
+
+Objects have no texture: a neutral white material that takes its colour from the floor's light,
+casts shadows, shows up in reflections and the GI, and is lit by the haze and the depth sweep.
+
+Click an object to select it and drag it to move it. While it's selected, a bar above the tray sets:
+
+- roughness, from polished (mirror-like coat) to chalky
+- size and height (height stretches the shape into a plinth, a column, a disc...)
+- turn around the surface it stands on
+- duplicate (the copy follows the pointer until you place it) and delete
+
+`Delete` removes the selected object and `Esc` deselects or cancels a placement. Each floor holds
+up to 12 objects, and they're saved with the floor.
 
 ## The room
 
@@ -70,6 +90,8 @@ sphere-traced every frame.
 - **Indirect light**: a multi-bounce irradiance probe volume per floor, ray traced on the GPU.
 - **Reflections**: glossy ray-traced GGX reflections.
 - **Haze**: single-scattering haze.
+- **Objects**: extra distance-field shapes in the same scene, so every pass (shadows, reflections,
+  GI probes) sees them. A bounding-sphere test keeps their cost near zero away from them.
 - **Final image**: temporal accumulation, bloom and a hue-preserving filmic tone curve.
 
 ## Files
@@ -81,6 +103,8 @@ js/shaders.js     all GLSL: scene, lights, GI probes, haze, TAA, depth sweep, bl
 js/gl.js          WebGL2 helpers
 js/renderer.js    pass orchestration, probe scheduling, camera framing
 js/floors.js      DepthVideo colourways, gradient textures, colour derivation, persistence
+js/scene.js       CPU copy of the distance field, for picking surfaces and objects
+js/objects.js     inserting, placing, selecting, dragging and editing objects
 js/app.js         elevator, edge-revealed controls, adaptive resolution, render loop
 ```
 

@@ -61,12 +61,67 @@
     <button class="icon-btn" id="resetBtn" type="button" aria-label="Reset this floor">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12a7 7 0 1 0 2.1-5"/><path d="M5 4.5v4h4"/></svg>
     </button>
+
+    <span class="sep" aria-hidden="true"></span>
+
+    <button class="icon-btn" id="objBtn" type="button" aria-label="Insert object" aria-expanded="false" aria-controls="shapes">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6.2l5.5 3.1v6.4L10 18.8l-5.5-3.1V9.3z"/><path d="M4.5 9.3l5.5 3.1 5.5-3.1M10 12.4v6.4" opacity=".55"/><path d="M18.5 2.8v5M16 5.3h5"/></svg>
+    </button>
+    <div class="shapes" id="shapes" role="group" aria-label="Shapes">
+      <button class="icon-btn" type="button" data-shape="0" aria-label="Sphere">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.5"/><path d="M4.6 12.4c.6 1.7 3.7 3 7.4 3s6.8-1.3 7.4-3" opacity=".5"/></svg>
+      </button>
+      <button class="icon-btn" type="button" data-shape="1" aria-label="Block">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.8l7 4v8.4l-7 4-7-4V7.8z"/><path d="M5 7.8l7 4 7-4M12 11.8v8.4" opacity=".55"/></svg>
+      </button>
+      <button class="icon-btn" type="button" data-shape="2" aria-label="Cylinder">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6.6" rx="6" ry="2.4"/><path d="M6 6.6v10.8c0 1.3 2.7 2.4 6 2.4s6-1.1 6-2.4V6.6"/></svg>
+      </button>
+      <button class="icon-btn" type="button" data-shape="3" aria-label="Pill">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3.5" width="8" height="17" rx="4"/></svg>
+      </button>
+      <button class="icon-btn" type="button" data-shape="4" aria-label="Ring">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="12" rx="8.2" ry="4.4"/><ellipse cx="12" cy="11.6" rx="3.8" ry="1.7" opacity=".55"/></svg>
+      </button>
+      <button class="icon-btn" type="button" data-shape="5" aria-label="Cone">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.8l6.3 13.6M12 3.8L5.7 17.4"/><ellipse cx="12" cy="17.4" rx="6.3" ry="2.4"/></svg>
+      </button>
+    </div>
+  </section>
+
+  <!-- the selected object: shown while one is selected -->
+  <section class="objbar" id="objbar" aria-label="Selected object">
+    <label class="knob" aria-label="Roughness">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.5"/><path d="M8.4 10.2a4.2 4.2 0 0 1 2.8-2.9"/></svg>
+      <input type="range" id="objRough" min="0" max="1" step="0.01" value="0.35">
+    </label>
+    <label class="knob" aria-label="Size">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18L18 6M13 6h5v5M11 18H6v-5"/></svg>
+      <input type="range" id="objSize" min="0.15" max="2.5" step="0.01" value="0.6">
+    </label>
+    <label class="knob" aria-label="Height">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v17M8.5 7L12 3.5 15.5 7M8.5 17l3.5 3.5 3.5-3.5"/></svg>
+      <input type="range" id="objStretch" min="-1" max="1" step="0.01" value="0">
+    </label>
+    <label class="knob" aria-label="Turn">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12a7 7 0 1 1-2.05-4.95"/><path d="M19 4.5V8h-3.5"/></svg>
+      <input type="range" id="objSpin" min="0" max="360" step="1" value="0">
+    </label>
+    <span class="sep" aria-hidden="true"></span>
+    <button class="icon-btn" id="objCopy" type="button" aria-label="Duplicate object">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 8.5v-2a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></svg>
+    </button>
+    <button class="icon-btn" id="objDelete" type="button" aria-label="Delete object">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V5h4v2M7 7l.8 12.1a1 1 0 0 0 1 .9h6.4a1 1 0 0 0 1-.9L17 7"/></svg>
+    </button>
   </section>
 
   <script src="js/shaders.js"></script>
   <script src="js/gl.js"></script>
   <script src="js/renderer.js"></script>
   <script src="js/floors.js"></script>
+  <script src="js/scene.js"></script>
+  <script src="js/objects.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
