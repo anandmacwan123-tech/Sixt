@@ -7,16 +7,15 @@
  *
  * Lighting model (all in linear HDR):
  *   - End panel: rectangular area light, analytic form factor + stochastic shadow ray.
- *   - LED strips: analytic Lambertian line lights (closed-form irradiance).
+ *   - Ceiling: a faint luminous diffuser, carried into the room by the GI probes.
  *   - Wall slits: hidden white strips in the pocket behind every wall extension (facing
  *     down the corridor). Never seen directly - their light is seen reflected off the
  *     next panel, the ledge and the floor. Rectangular area lights, pulsing.
  *   - Indirect: per-floor irradiance probe volume, multi-bounce, updated on the GPU.
  *   - Reflections: one GGX (VNDF) sample per pixel, ray traced, accumulated by TAA;
- *     the thin LED strips are added analytically as blurred line reflections.
- *   - Haze: ray-marched single scattering from the panel, LEDs and slits.
+ *   - Haze: ray-marched single scattering from the panel and slits.
  *
- * Output is split in two buffers: "static" light (panel + LEDs, unit intensity) and
+ * Output is split in two buffers: "static" light (panel + ceiling, unit intensity) and
  * "slit" light (unit pulse). They are recombined each frame, so the pulse and the
  * light-intensity slider never smear the temporal accumulation.
  *
@@ -53,12 +52,8 @@ uniform int uQuality;      // 1: ray traced reflections + shadows, 0: analytic f
 
 // ---------------------------------------------------------------- geometry
 // Local floor space: x = lateral, y = height above floor, z = depth (towards the end panel).
-const float FLOOR_H    = 5.2;
-const float WALK_HW    = 2.78;    // half width of the walkway (LED lines)
-const float LEDGE_H    = 0.166;   // side ledge height
+const float FLOOR_H    = 4.4;
 const float CEIL_H     = 3.685;   // central ceiling height
-const float SOFFIT_H   = 3.51;    // side soffit height
-const float COFFER_TOP = 4.625;
 const float Z_FRONT    = 1.2;     // section cut / open front of the building
 const float Z_END      = 17.65;   // back wall behind the panel
 const float SIDE_XMAX  = 4.6;
@@ -67,11 +62,10 @@ const float WALL_X  = 3.24;       // innermost (far) edge of a panel
 const float WALL_K  = 0.29;       // panel yaw (dx/dz)
 const float WALL_P  = 2.41;       // panel pitch along the corridor
 const float WALL_Z0 = 8.32;       // z of one far edge
-// ceiling coffers
-const float COF_P  = 4.9;
-const float COF_Z0 = 4.275;
-const vec2  COF_HS = vec2(2.32, 1.925);
-const float COF_R  = 0.65;
+// each panel face is a shallow circular arc turned towards the camera (circle in (|x|, u))
+const vec2  WALL_C  = vec2(5.9651, 1.8939);
+const float WALL_R  = 2.7736;
+const float FILLET  = 0.8;        // every inside corner of the room is rounded this much
 // end panel
 const float PANEL_Z  = 17.05;
 const float PANEL_T  = 0.08;
@@ -81,15 +75,9 @@ const float PANEL_Y1 = 3.55;
 const float PANEL_YC = 0.5 * (PANEL_Y0 + PANEL_Y1);
 const float PANEL_HH = 0.5 * (PANEL_Y1 - PANEL_Y0);
 const float PANEL_R  = 0.24;
-const float HEADER_Z = 16.05;     // dark lintel above the lightbox recess
-const float HEADER_Y = 3.6;
-// LED strips
-const float LED_W   = 0.03;
-const float LED_Y   = 0.015;
-const float LED_LEN = PANEL_Z - Z_FRONT;
 // slits: light strips on the hidden back face of every protruding wall extension
 // (the step at each far edge, facing +z), i.e. inside the groove behind the extension
-const float SLIT_XC  = 3.45;      // |x| of the strip centre (the step spans 3.24 .. 3.94)
+const float SLIT_XC  = 3.62;      // |x| of the strip centre (the step spans 3.24 .. 3.94)
 const float SLIT_HW  = 0.12;      // half width across the step
 const float SLIT_LOBE = 4.0;      // wall-washer beam (cos^n) ...
 const vec2  SLIT_AXIS = vec2(0.2079, 0.9781);  // ... tilted 12 deg outwards onto the next panel (|x|, z)
@@ -100,26 +88,23 @@ const float SLIT_HH  = 0.5 * (SLIT_Y1 - SLIT_Y0);
 const float SLIT_KMIN = -2.0;
 const float SLIT_KMAX = 3.0;
 
-const vec2 WEDGE_A   = vec2(WALL_X + WALL_K * WALL_P, 0.0);
-const vec2 WEDGE_B   = vec2(WALL_X, WALL_P);
 
 const float ROOM_Z0 = Z_FRONT - 2.0;
 const float ROOM_ZC = 0.5 * (ROOM_Z0 + Z_END);
 const float ROOM_ZH = 0.5 * (Z_END - ROOM_Z0);
 
 // light constants (radiance, linear HDR, unit intensity)
-const float LED_RAD  = 6.5;
 const float SLIT_RAD = 8.5;
 const vec3  SLIT_COL = vec3(1.0, 0.985, 0.96);
 const float BACK_ALB = 0.12;
 const float PANEL_EXP = 0.5;      // the end panel emits like a lightbox: mostly straight out
 const float SKY_GAIN = 1.0;       // coffer cove light, relative to the panel's top colour
 const float SLIT_ALB = 0.55;      // diffuser behind the slits when they are dark
+const float CEIL_GLOW = 0.14;      // the ceiling is a faint luminous diffuser
 const float SECTION_RAD = 0.0025;
 
 #define MAT_ROOM 0
 #define MAT_PANEL 1
-#define MAT_LED 2
 #define MAT_SLIT 3
 #define MAT_SECTION 4
 #define MAT_BACK 5
@@ -169,16 +154,15 @@ float sdRoundRect(vec2 p, vec2 b, float r) {
   return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 }
 
-// One saw-tooth wall panel as a solid wedge; q = (|x|, u) with u in [0, WALL_P].
-float sdWedge(vec2 q) {
-  vec2 e = WEDGE_B - WEDGE_A;
-  vec2 w = q - WEDGE_A;
-  float h = clamp(dot(w, e) / dot(e, e), 0.0, 1.0);
-  float d = length(w - e * h);
-  d = min(d, q.x >= WEDGE_A.x ? abs(q.y) : length(q - WEDGE_A));
-  d = min(d, q.x >= WEDGE_B.x ? abs(q.y - WALL_P) : length(q - WEDGE_B));
-  bool inside = q.y > 0.0 && q.y < WALL_P && q.x > WALL_X + WALL_K * (WALL_P - q.y);
-  return inside ? -d : d;
+float smin(float a, float b, float k) { float h = max(k - abs(a - b), 0.0) / k; return min(a, b) - h * h * k * 0.25; }
+float smax(float a, float b, float k) { return -smin(-a, -b, k); }
+
+// One wall panel: a shallow circular face turned towards the camera, its protruding edge
+// rounded off; q = (|x|, u) with u in [0, WALL_P].
+float sdPanel(vec2 q) {
+  float disk = length(q - WALL_C) - WALL_R;
+  float slab = max(-q.y, q.y - WALL_P);
+  return smax(disk, slab, 0.35);
 }
 
 // Index of the wall panel containing z (its far edge is at WALL_Z0 + k*WALL_P) and local u.
@@ -190,31 +174,18 @@ float wallCell(float z, out float u) {
 
 bool slitValid(float k) { return k >= SLIT_KMIN && k <= SLIT_KMAX; }
 
-// Signed distance to the air of one floor (negative inside the air).
+// Signed distance to the air of one floor (negative inside the air): floor, ceiling, curved
+// side panels and back wall, with every inside corner filleted so no edge reads.
 float cellAir(vec3 p) {
   float ax = abs(p.x);
-  float d = sdBox(p - vec3(0.0, 0.5 * CEIL_H, ROOM_ZC), vec3(WALK_HW, 0.5 * CEIL_H, ROOM_ZH));
-  if (ax > WALK_HW - 0.6) {
-    float side = sdBox(vec3(ax - 0.5 * (WALK_HW - 0.05 + SIDE_XMAX), p.y - 0.5 * (LEDGE_H + SOFFIT_H), p.z - ROOM_ZC),
-                       vec3(0.5 * (SIDE_XMAX - WALK_HW + 0.05), 0.5 * (SOFFIT_H - LEDGE_H), ROOM_ZH));
-    float u;
-    float k = wallCell(p.z, u);
-    float wall = min(sdWedge(vec2(ax, u)), sdWedge(vec2(ax, u + WALL_P)));
-    side = max(side, -wall);
-    d = min(d, side);
-  }
-  if (p.y > CEIL_H - 0.6) {
-    float m = clamp(floor((p.z - COF_Z0) / COF_P + 0.5), 0.0, 2.0);
-    float c = sdRoundRect(vec2(p.x, p.z - (COF_Z0 + m * COF_P)), COF_HS, COF_R);
-    c = max(c, abs(p.y - 0.5 * (CEIL_H - 0.2 + COFFER_TOP)) - 0.5 * (COFFER_TOP - CEIL_H + 0.2));
-    d = min(d, c);
-  }
-  return d;
-}
-
-float headerSDF(vec3 p) {
-  return sdBox(p - vec3(0.0, 0.5 * (HEADER_Y + CEIL_H + 0.2), 0.5 * (HEADER_Z + Z_END + 1.0)),
-               vec3(WALK_HW + 0.2, 0.5 * (CEIL_H + 0.2 - HEADER_Y), 0.5 * (Z_END + 1.0 - HEADER_Z)));
+  float u;
+  wallCell(p.z, u);
+  float wall = min(sdPanel(vec2(ax, u)), sdPanel(vec2(ax, u + WALL_P)));
+  float d = smax(-p.y, p.y - CEIL_H, FILLET);
+  d = smax(d, -wall, FILLET);
+  d = smax(d, p.z - Z_END, FILLET);
+  d = max(d, ROOM_Z0 - p.z);
+  return max(d, ax - SIDE_XMAX);
 }
 
 float panelSDF(vec3 p) {
@@ -233,7 +204,7 @@ float map(vec3 pw) {
   float dp = 1e3;
   if (n >= 0.0 && n < float(uNumFloors)) {
     air = min(air, cellAir(p));
-    dp = min(panelSDF(p), headerSDF(p));
+    dp = panelSDF(p);
   }
   return min(-air, dp);
 }
@@ -314,11 +285,7 @@ int materialAt(vec3 p, vec3 n, out float slitId, out vec2 slitUV) {
   if (dPanel < 0.02 && dPanel < -cellAir(p)) return n.z < -0.7 ? MAT_PANEL : MAT_PANELBODY;
   if (p.z < Z_FRONT + 0.002) return MAT_SECTION;
   if (p.z > Z_END - 0.004) return MAT_BACK;
-  if (p.y > COFFER_TOP - 0.004 && n.y < -0.7) return MAT_SKY;
   float ax = abs(p.x);
-  if (abs(ax - WALK_HW) < 0.004 && abs(n.x) > 0.7) {
-    if (p.y < LED_W || (p.y > CEIL_H - LED_W && p.y < CEIL_H + 0.01)) return MAT_LED;
-  }
   if (n.z > 0.7 && abs(ax - SLIT_XC) < SLIT_HW && p.y > SLIT_Y0 && p.y < SLIT_Y1) {
     float u;
     float kk = wallCell(p.z, u) - 1.0;   // the step face sits just past far edge kk
@@ -348,11 +315,14 @@ vec3 panelEmission(vec3 p, int f) {
   float u = clamp(p.x / PANEL_HW, -1.0, 1.0);
   float v = clamp((p.y - PANEL_Y0) / (PANEL_Y1 - PANEL_Y0), 0.0, 1.0);
   // keep it luminous even where the gradient's middle is a dark grey (hue from the gradient)
-  vec3 g = gradA(f, 0.66 * (1.0 - v));
+  vec3 g = gradA(f, 0.45 * (1.0 - v));
   vec3 g1 = gradA(f, 0.0);
   float m = max(max(g.r, g.g), max(g.b, 1e-3)), m1 = max(max(g1.r, g1.g), g1.b);
   vec3 c = displayToHdr(g * max(1.0, 0.92 * m1 / m));
   float fall = (1.0 - 0.5 * u * u) * (1.0 + 0.1 * (v - 0.5));
+  // soft, feathered rim
+  float e = -sdRoundRect(vec2(p.x, p.y - PANEL_YC), vec2(PANEL_HW, PANEL_HH), PANEL_R);
+  fall *= mix(0.45, 1.0, smoothstep(0.0, 0.6, e));
   return c * fall;
 }
 vec3 panelAvg(int f) { return 0.5 * (uPanelTop[f] + uPanelBot[f]) * 0.8333; }
@@ -362,22 +332,15 @@ float panelDirAtt(vec3 p) {
   float c = max(-d.z, 0.0) * inversesqrt(max(dot(d, d), 1e-4));
   return pow(c, PANEL_EXP);
 }
-vec3 skyEmission(vec3 p, int f) {
-  float m = clamp(floor((p.z - COF_Z0) / COF_P + 0.5), 0.0, 2.0);
-  float dFar = COF_Z0 + m * COF_P + COF_HS.y - p.z;
-  float band = 0.18 + 0.82 * exp(-max(dFar, 0.0) / 0.42);
-  return uPanelTop[f] * (SKY_GAIN * band);
+// faint glow of the ceiling diffuser (reaches the room through the GI probes)
+vec3 ceilGlow(vec3 p, vec3 n, int f) {
+  float w = smoothstep(0.25, 0.95, -n.y) * smoothstep(CEIL_H - 0.9, CEIL_H, p.y);
+  return uPanelTop[f] * (CEIL_GLOW * w);
 }
-// Indirect light falls off into the upper side pockets (soffit / wall tops), as in the reference.
-float giShade(vec3 p) {
-  float pocket = abs(p.x) > WALK_HW + 0.02 ? mix(1.0, 0.55, smoothstep(2.3, 3.5, p.y)) : 1.0;
-  return 0.88 * pocket;
-}
-// darkened surround of the end panel (matte black reveal around the lightbox)
-float endShade(vec3 p) {
-  if (p.z > HEADER_Z - 0.01 && p.y > HEADER_Y - 0.01) return BACK_ALB;
-  return mix(1.0, BACK_ALB, smoothstep(PANEL_Z - 0.55, PANEL_Z - 0.08, p.z));
-}
+vec3 skyEmission(vec3 p, int f) { return vec3(0.0); }
+vec3 sectionGlow(int f) { return uPanelTop[f] * 0.3; }
+float giShade(vec3 p) { return 0.9; }
+float endShade(vec3 p) { return 1.0; }
 
 vec3 edgeVFF(vec3 v1, vec3 v2) {
   float x = dot(v1, v2);
@@ -404,43 +367,9 @@ float panelFF(vec3 p, vec3 n) {
                       vec3(PANEL_HW, PANEL_Y1, PANEL_Z), vec3(-PANEL_HW, PANEL_Y1, PANEL_Z));
 }
 
-// Irradiance (per unit radiance) from a thin Lambertian strip along +z.
-// A: start, ne: emitter normal (perpendicular to z), w: strip width.
-float stripIrradiance(vec3 p, vec3 n, vec3 A, float len, vec3 ne, float w) {
-  vec3 a0 = A - p;
-  float gam = -dot(ne, a0);
-  if (gam <= 0.0) return 0.0;
-  float alpha = dot(n, a0), beta = n.z;
-  float t0 = 0.0, t1 = len;
-  if (abs(beta) > 1e-5) {
-    float tc = -alpha / beta;
-    if (beta > 0.0) t0 = max(t0, tc); else t1 = min(t1, tc);
-  } else if (alpha <= 0.0) return 0.0;
-  if (t1 <= t0) return 0.0;
-  float c = a0.z;
-  float q = max(dot(a0, a0) - c * c, 2e-4);
-  float sq = sqrt(q);
-  float s0 = t0 + c, s1 = t1 + c;
-  float k = alpha - beta * c;
-  float I1 = (s1 / (2.0 * q * (s1 * s1 + q)) + atan(s1 / sq) / (2.0 * q * sq))
-           - (s0 / (2.0 * q * (s0 * s0 + q)) + atan(s0 / sq) / (2.0 * q * sq));
-  float I2 = 0.5 / (s0 * s0 + q) - 0.5 / (s1 * s1 + q);
-  return clamp(w * gam * (k * I1 + beta * I2), 0.0, 1.6);
-}
-
-float ledIrradiance(vec3 p, vec3 n) {
-  float e = 0.0;
-  e += stripIrradiance(p, n, vec3(-WALK_HW, LED_Y, Z_FRONT), LED_LEN, vec3(1, 0, 0), LED_W);
-  e += stripIrradiance(p, n, vec3( WALK_HW, LED_Y, Z_FRONT), LED_LEN, vec3(-1, 0, 0), LED_W);
-  e += stripIrradiance(p, n, vec3(-WALK_HW, CEIL_H - LED_Y, Z_FRONT), LED_LEN, vec3(1, 0, 0), LED_W);
-  e += stripIrradiance(p, n, vec3( WALK_HW, CEIL_H - LED_Y, Z_FRONT), LED_LEN, vec3(-1, 0, 0), LED_W);
-  return e;
-}
-
 // Direct irradiance from the static lights (unit intensity, panel visibility supplied).
 vec3 directStatic(vec3 p, vec3 n, int f, float panelVis) {
   vec3 E = PI * panelAvg(f) * (panelFF(p, n) * panelDirAtt(p) * panelVis);
-  E += uLedCol[f] * (LED_RAD * ledIrradiance(p, n));
   return E;
 }
 
@@ -487,26 +416,6 @@ float glowFalloff(float delta, float s, float wAng, float sig) {
   float sg = max(sig, 0.45 * wAng);
   return wAng * exp(-0.5 * ang * ang / (sg * sg)) / (sg * 2.5066);
 }
-float lineGlowZ(vec3 p, vec3 r, float tOcc, vec3 A, vec3 ne, float sig) {
-  vec3 w0 = p - A;
-  if (dot(w0, ne) <= 0.0) return 0.0;
-  float b = r.z;
-  float denom = max(1.0 - b * b, 1e-4);
-  float t = clamp((w0.z - b * dot(r, w0)) / denom, 0.0, LED_LEN);
-  vec3 Q = A + vec3(0.0, 0.0, t);
-  float s = dot(Q - p, r);
-  if (s <= 0.0 || s > tOcc + 0.05) return 0.0;
-  float wAng = LED_W * max(abs(dot(r, ne)), 0.12) / s;
-  return glowFalloff(length(p + r * s - Q), s, wAng, sig);
-}
-vec3 ledGlow(vec3 p, vec3 r, float tOcc, int f, float sig) {
-  float g = lineGlowZ(p, r, tOcc, vec3(-WALK_HW, LED_Y, Z_FRONT), vec3(1, 0, 0), sig)
-          + lineGlowZ(p, r, tOcc, vec3( WALK_HW, LED_Y, Z_FRONT), vec3(-1, 0, 0), sig)
-          + lineGlowZ(p, r, tOcc, vec3(-WALK_HW, CEIL_H - LED_Y, Z_FRONT), vec3(1, 0, 0), sig)
-          + lineGlowZ(p, r, tOcc, vec3( WALK_HW, CEIL_H - LED_Y, Z_FRONT), vec3(-1, 0, 0), sig);
-  return uLedCol[f] * (LED_RAD * g);
-}
-
 // ---------------------------------------------------------------- BRDF helpers
 float envBRDF(float F0, float rough, float NoV) {
   const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
@@ -548,7 +457,7 @@ float surfF0(int f) { return mix(0.02, 0.065, uFloorP[f].y); }
 const int PNX = 13, PNY = 8, PNZ = 24;
 const vec2 PROBE_TEX = vec2(78.0, 192.0);
 const vec3 PROBE_ORIGIN  = vec3(-4.0, 0.15, 1.4);
-const vec3 PROBE_SPACING = vec3(8.0 / 12.0, 4.3 / 7.0, 16.0 / 23.0);
+const vec3 PROBE_SPACING = vec3(8.0 / 12.0, (CEIL_H - 0.35) / 7.0, 16.0 / 23.0);
 
 vec4 probeDir(sampler2D tex, float d, vec3 g) {
   float k0 = floor(g.z);
@@ -573,7 +482,7 @@ float hazeSigma(int f, vec3 p) {
   float base = 0.0015 + 0.11 * pow(h, 1.6);
   vec3 q = p * 0.42 + vec3(0.11, 0.035, -0.05) * uTime;
   float nz = vnoise(q);
-  return base * (0.55 + 0.9 * nz);
+  return base * (0.75 + 0.5 * nz);
 }
 float phaseHG(float c, float g) {
   float g2 = g * g;
@@ -590,14 +499,6 @@ float panelSolidAngle(vec3 p) {
   vec3 a = vec3(-PANEL_HW, PANEL_Y0, PANEL_Z) - p, b = vec3(PANEL_HW, PANEL_Y0, PANEL_Z) - p;
   vec3 c = vec3(PANEL_HW, PANEL_Y1, PANEL_Z) - p, d = vec3(-PANEL_HW, PANEL_Y1, PANEL_Z) - p;
   return triSolidAngle(a, b, c) + triSolidAngle(a, c, d);
-}
-float lineScatter(vec3 p, vec3 A, vec3 ne) {
-  vec3 a0 = A - p;
-  if (dot(ne, -a0) <= 0.0) return 0.0;
-  float c = a0.z;
-  float q = max(dot(a0, a0) - c * c, 1e-3);
-  float sq = sqrt(q);
-  return LED_W * 0.7 * (atan((LED_LEN + c) / sq) - atan(c / sq)) / sq;
 }
 `;
 
@@ -623,7 +524,7 @@ Surf frontSurf(vec3 ro, vec3 rd) {
   s.pw = ro + rd * max(t, 0.0);
   s.f = clamp(floorOf(s.pw.y), 0, NF - 1);
   s.pl = toLocal(s.pw, s.f);
-  s.pl.y = clamp(s.pl.y, 0.05, COFFER_TOP - 0.05);
+  s.pl.y = clamp(s.pl.y, 0.05, CEIL_H - 0.05);
   s.n = vec3(0.0, 0.0, 1.0);
   s.mat = MAT_ROOM; s.slitId = -1.0; s.slitUV = vec2(0.0);
   return s;
@@ -636,12 +537,12 @@ void shadeSecondary(Surf s, bool emitDirect, float panelVis, out vec3 Ls, out ve
   Ls = vec3(0.0); Lt = vec3(0.0);
   if (s.mat == MAT_PANEL) { if (emitDirect) Ls = panelEmission(s.pl, s.f); return; }
   if (s.mat == MAT_SKY) { Ls = skyEmission(s.pl, s.f); return; }
-  if (s.mat == MAT_SECTION || s.mat == MAT_PANELBODY) { Ls = vec3(SECTION_RAD); return; }
+  if (s.mat == MAT_SECTION || s.mat == MAT_PANELBODY) { Ls = sectionGlow(s.f); return; }
   vec3 alb = s.mat == MAT_SLIT ? vec3(SLIT_ALB) : uAlbedo[s.f] * (s.mat == MAT_BACK ? BACK_ALB : endShade(s.pl));
   vec4 gi = giSample(s.f, s.pl, s.n) * giShade(s.pl);
   vec3 Es = directStatic(s.pl, s.n, s.f, panelVis) + gi.rgb;
   vec3 Et = directSlit(s.pl, s.n) + gi.a * uAlbedo[s.f];
-  Ls = alb * (1.0 / PI) * Es;
+  Ls = alb * (1.0 / PI) * Es + ceilGlow(s.pl, s.n, s.f);
   Lt = alb * (1.0 / PI) * Et;
   if (s.mat == MAT_SLIT && emitDirect) Lt += SLIT_COL * SLIT_RAD;
 }
@@ -719,17 +620,12 @@ void fogIntegrate(vec3 ro, vec3 rd, float tEnd, vec2 px, out vec3 inS, out vec3 
     int f = floorOf(pw.y);
     if (f < 0 || f >= uNumFloors) continue;
     vec3 p = toLocal(pw, f);
-    if (p.y > COFFER_TOP || p.y < 0.0) continue;
+    if (p.y > CEIL_H || p.y < 0.0) continue;
     float sigma = hazeSigma(f, p);
     // panel (forward scattering produces the glow around it)
     vec3 toPanel = normalize(vec3(clamp(p.x, -PANEL_HW, PANEL_HW), clamp(p.y, PANEL_Y0, PANEL_Y1), PANEL_Z) - p);
     float ph = phaseHG(dot(toPanel, rd), 0.55) * 0.75 + 0.25 / (4.0 * PI);
     vec3 S = panelAvg(f) * (panelSolidAngle(p) * ph);
-    float led = lineScatter(p, vec3(-WALK_HW, LED_Y, Z_FRONT), vec3(1, 0, 0))
-              + lineScatter(p, vec3( WALK_HW, LED_Y, Z_FRONT), vec3(-1, 0, 0))
-              + lineScatter(p, vec3(-WALK_HW, CEIL_H - LED_Y, Z_FRONT), vec3(1, 0, 0))
-              + lineScatter(p, vec3( WALK_HW, CEIL_H - LED_Y, Z_FRONT), vec3(-1, 0, 0));
-    S += uLedCol[f] * (LED_RAD * led / (4.0 * PI));
     S += giM.rgb;
     float st = 0.0;
     for (int j = 0; j < 12; j++) {
@@ -772,15 +668,13 @@ void main() {
       Ls = panelEmission(s.pl, s.f);
     } else if (s.mat == MAT_SKY) {
       Ls = skyEmission(s.pl, s.f);
-    } else if (s.mat == MAT_LED) {
-      Ls = uLedCol[s.f] * LED_RAD;
     } else if (s.mat == MAT_SLIT) {
       vec3 ds, dt;
       shadeSecondary(s, false, 1.0, ds, dt);
       Ls = ds;
       Lt = dt + SLIT_COL * SLIT_RAD;
     } else if (s.mat == MAT_SECTION || s.mat == MAT_PANELBODY) {
-      Ls = vec3(SECTION_RAD);
+      Ls = sectionGlow(s.f);
     } else {
       vec3 n = s.n;
       vec3 alb = uAlbedo[s.f] * (s.mat == MAT_BACK ? BACK_ALB : endShade(s.pl));
@@ -791,11 +685,11 @@ void main() {
       vec4 gi = giSample(s.f, s.pl, n) * giShade(s.pl);
       float ffp = panelFF(s.pl, n);
       float vis = ffp > 1e-4 ? (uQuality > 0 ? panelVisibility(s.pw, s.pl, n, sample2(px, 1)) : 1.0) : 0.0;
-      vec3 Edir = PI * panelAvg(s.f) * (ffp * panelDirAtt(s.pl) * vis) + uLedCol[s.f] * (LED_RAD * ledIrradiance(s.pl, n));
+      vec3 Edir = PI * panelAvg(s.f) * (ffp * panelDirAtt(s.pl) * vis);
       vec3 Es = Edir + gi.rgb * ao;
       vec3 Et = directSlit(s.pl, n) + gi.a * uAlbedo[s.f] * ao;
       vec3 kd = (1.0 - specW) * alb * (1.0 / PI);
-      Ls = kd * Es;
+      Ls = kd * Es + ceilGlow(s.pl, n, s.f);
       Lt = kd * Et;
 
       float alpha = max(rough * rough, 0.0008);
@@ -832,7 +726,6 @@ void main() {
         Rt = gr.a * uAlbedo[s.f] * (1.0 / PI);
       }
       float sig = 1.5 * alpha + 0.004;
-      Rs += ledGlow(s.pl, R, tOcc, s.f, sig);
       Ls += specW * Rs;
       Lt += specW * Rt;
 
@@ -896,7 +789,7 @@ void main() {
     else if (w.z < 0.0) s = frontSurf(pw, w);
     else continue;
     float vis = 1.0;
-    if (s.mat == MAT_ROOM || s.mat == MAT_BACK || s.mat == MAT_LED || s.mat == MAT_SLIT) {
+    if (s.mat == MAT_ROOM || s.mat == MAT_BACK || s.mat == MAT_SLIT) {
       vis = panelFF(s.pl, s.n) > 1e-4 ? panelVisibility(s.pw, s.pl, s.n, vec2(rand01(seed), rand01(seed))) : 0.0;
     }
     vec3 Ls, Lt;
@@ -998,17 +891,21 @@ uniform vec4 uFloorQ[NF];      // x: sweep on
 uniform vec3 uCamPos;
 uniform float uFocal;
 uniform vec2 uPrincipal;
-uniform float uSweepPhase;     // 0..1 position of the pulse in the loop
-uniform float uSweepLayers;
-uniform float uSweepWidth;     // pulse width as a share of the loop
-uniform float uSweepFeather;   // soft edge, in layer units (0..0.5)
+uniform float uSweepPhase;     // 0..1 position of the wave in its loop
+uniform float uSweepWidth;     // width of the wave as a share of the corridor depth
 uniform float uSweepGain;
 uniform float uSweepAir;
+uniform float uMist;           // luminous mist while travelling between floors
+uniform float uLiftPos;
+uniform vec3 uMistLo;
+uniform vec3 uMistHi;
+uniform vec2 uRes;
 out vec4 outColor;
 
 const float Z_START = 1.2;
 const float Z_STOP = 17.05;
-const float FLOOR_H = 5.2;
+const float FLOOR_H = 4.4;
+const float PI = 3.14159265359;
 
 vec3 gradB(int f, float t) { return textureLod(uLut, vec2(t, (float(f * 2 + 1) + 0.5) / float(NF * 2)), 0.0).rgb; }
 float acesInv(float y) {
@@ -1018,30 +915,18 @@ float acesInv(float y) {
 }
 vec3 displayToHdr(vec3 c) { float m = max(max(c.r, c.g), max(c.b, 1e-4)); return c * (acesInv(m) / m); }
 
-float easeInOut(float x) { return x * x * (3.0 - 2.0 * x); }
-// eased tent centred on layer i, wrapping around the loop
-float layerPulse(float i) {
-  float diff = uSweepPhase - (i + 0.5) / uSweepLayers;
-  diff -= floor(diff + 0.5);
-  float hw = 0.5 * uSweepWidth;
-  float ad = abs(diff);
-  return ad >= hw ? 0.0 : easeInOut(1.0 - ad / hw);
+// One wide raised-cosine wave travelling from the camera to the far end, fully feathered.
+float waveCentre() { return uSweepPhase * (1.0 + uSweepWidth) - 0.5 * uSweepWidth; }
+float waveAt(float x) {
+  float t = (x - waveCentre()) / uSweepWidth;
+  return abs(t) >= 0.5 ? 0.0 : 0.5 + 0.5 * cos(2.0 * PI * t);
 }
-// feathered box for layer j (the masks of neighbouring layers sum to one)
-float layerMask(float x, float j) {
-  float fe = uSweepFeather;
-  return smoothstep(j - fe, j + fe, x) - smoothstep(j + 1.0 - fe, j + 1.0 + fe, x);
-}
-float sweepAt(float zn) {
-  float x = zn * uSweepLayers;
-  float l = floor(x);
-  float a = 0.0;
-  for (int k = -1; k <= 1; k++) {
-    float j = l + float(k);
-    if (j < 0.0 || j >= uSweepLayers) continue;
-    a += layerPulse(j) * layerMask(x, j);
-  }
-  return a;
+// its integral over [x0, x1] (corridor units)
+float waveIntegral(float x0, float x1) {
+  float c = waveCentre(), w = uSweepWidth;
+  float a = clamp(x0 - c, -0.5 * w, 0.5 * w), b = clamp(x1 - c, -0.5 * w, 0.5 * w);
+  float k = w / (4.0 * PI);
+  return (0.5 * b + k * sin(2.0 * PI * b / w)) - (0.5 * a + k * sin(2.0 * PI * a / w));
 }
 vec3 bandColour(int f, float s) { return displayToHdr(gradB(f, 0.5 + 0.5 * s)); }
 
@@ -1058,30 +943,24 @@ void main() {
     float L = Z_STOP - Z_START;
     float ly = wp.y - float(f) * FLOOR_H;
     float zn = (wp.z - Z_START) / L;
-    if (zn > 0.0 && zn < 1.03 && ly > -0.05 && ly < 4.7) {
-      float sw = sweepAt(min(zn, 0.9999));
+    if (zn > 0.0 && ly > -0.05 && ly < FLOOR_H) {
+      float sw = waveAt(min(zn, 1.0));
       vec3 sc = bandColour(f, sw);
-      col = mix(col, sc * 0.5, 0.3 * sw) + sc * (uSweepGain * sw);
+      col = mix(col, sc * 0.5, 0.25 * sw) + sc * (uSweepGain * sw);
     }
-    // haze inside the swept layers along the view ray
+    // the wave also lights the haze it passes through
     float z0 = max(Z_START, uCamPos.z), z1 = min(wp.z, Z_STOP);
     if (z1 > z0 && rd.z > 1e-3) {
-      float N = uSweepLayers;
-      float centre = floor(uSweepPhase * N);
-      vec3 air = vec3(0.0);
-      for (int k = -2; k <= 2; k++) {
-        float j = centre + float(k);
-        j -= N * floor(j / N);
-        float p = layerPulse(j);
-        if (p <= 0.0) continue;
-        float za = Z_START + j * L / N;
-        float ov = max(0.0, min(z1, za + L / N) - max(z0, za));
-        air += bandColour(f, p) * (p * ov);
-      }
-      col += air * ((0.02 + 0.07 * uFloorP[f].z) * uSweepAir / rd.z);
+      float x0 = (z0 - Z_START) / L, x1 = (z1 - Z_START) / L;
+      float I = waveIntegral(x0, x1);
+      float avg = I / max(x1 - x0, 1e-3);
+      col += bandColour(f, min(1.0, 1.5 * avg)) * (I * L * (0.02 + 0.07 * uFloorP[f].z) * uSweepAir / rd.z);
     }
   }
-  outColor = vec4(col, float(f));
+  vec2 uv = gl_FragCoord.xy / uRes;
+  col = mix(col, mix(uMistLo, uMistHi, smoothstep(0.0, 1.0, uv.y)), uMist);
+  // continuous floor index, so the grade blends between the two floors inside the mist
+  outColor = vec4(col, mix(float(f), uLiftPos, uMist));
 }
 `;
 
@@ -1190,15 +1069,18 @@ void main() {
   hdr = mix(hdr, bloom * (1.0 / 6.0), uBloomStrength);
   vec3 c = tonemap(hdr * uExposure);
   // soft gradient grade: colour from the floor's gradient at this tone, brightness kept
-  int f = clamp(int(textureLod(uHdr, uv, 0.0).a + 0.5), 0, NF - 1);
-  float rowA = (float(f * 2) + 0.5) / float(NF * 2);
+  float fi = clamp(textureLod(uHdr, uv, 0.0).a, 0.0, float(NF - 1));
+  float f0 = floor(fi), fb = fi - f0;
+  float rowA = (f0 * 2.0 + 0.5) / float(NF * 2);
+  float rowB = (min(f0 + 1.0, float(NF - 1)) * 2.0 + 0.5) / float(NF * 2);
   float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  vec3 g = textureLod(uLut, vec2(1.0 - clamp(pow(lum, 0.75) * 1.1, 0.0, 1.0), rowA), 0.0).rgb;
+  float gt = 1.0 - clamp(pow(lum, 0.75) * 1.1, 0.0, 1.0);
+  vec3 g = mix(textureLod(uLut, vec2(gt, rowA), 0.0).rgb, textureLod(uLut, vec2(gt, rowB), 0.0).rgb, fb);
   float gl = dot(g, vec3(0.2126, 0.7152, 0.0722));
   vec3 gs = min(g * (lum / max(gl, 0.02)), vec3(1.0));
   c = mix(c, gs, uGrade);
   // lifted, tinted shadows instead of black
-  vec3 floorTint = textureLod(uLut, vec2(0.9, rowA), 0.0).rgb;
+  vec3 floorTint = mix(textureLod(uLut, vec2(0.9, rowA), 0.0).rgb, textureLod(uLut, vec2(0.9, rowB), 0.0).rgb, fb);
   c = c * (1.0 - uLift) + floorTint * uLift;
   vec2 q = uv - 0.5;
   c *= 1.0 - uVignette * dot(q, q) * 1.6;

@@ -6,10 +6,10 @@
   const Floors = window.AtriumFloors;
   const params = new URLSearchParams(window.location.search);
 
-  const FLOOR_H = 5.2;
+  const FLOOR_H = 4.4;
   const EYE_H = 1.6;
   const PULSE_PERIOD = 3.2;
-  const DOLLY = 3.2;
+  const DOLLY = 2.0;
   const EDGE_BOTTOM = 96;   // px from the bottom edge that reveal the settings tray
   const EDGE_RIGHT = 84;    // px from the right edge that reveal the floors rail
 
@@ -23,7 +23,6 @@
   const $ = (id) => document.getElementById(id);
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
-  const sameStops = (a, b) => a.length === b.length && a.every((c, i) => c.toLowerCase() === b[i].toLowerCase());
 
   const floors = Floors.load();
   // optional overrides for captures
@@ -180,14 +179,14 @@
     $('floorList').appendChild(li);
     floorButtons[i] = b;
   }
-  // the six gradients
+  // DepthVideo's colourways
   const gradButtons = Floors.GRADIENTS.map((g) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'grad';
-    b.style.setProperty('--g', Floors.cssGradient(g.stops));
+    b.style.setProperty('--g', Floors.cssGradient({ map: g.id }));
     b.setAttribute('aria-label', g.name + ' gradient');
-    b.addEventListener('click', () => applyStops(g.stops));
+    b.addEventListener('click', () => { Floors.setMap(floors[lift.to], g.id); colourChanged(); });
     $('grads').appendChild(b);
     return b;
   });
@@ -202,17 +201,18 @@
     ui.reflect.value = f.reflect;
     ui.haze.value = f.haze;
     [ui.intensity, ui.reflect, ui.haze].forEach(setRangeFill);
+    const stops = Floors.stopsOf(f);
     ui.stops.forEach((el, k) => {
-      el.value = f.stops[k];
-      el.nextElementSibling.style.setProperty('--c', f.stops[k]);
+      el.value = stops[k];
+      el.nextElementSibling.style.setProperty('--c', stops[k]);
     });
     ui.sweep.setAttribute('aria-pressed', f.sweep ? 'true' : 'false');
-    document.documentElement.style.setProperty('--accent', f.stops[0]);
+    document.documentElement.style.setProperty('--accent', stops[0]);
     floorButtons.forEach((b, i) => {
       b.setAttribute('aria-current', i === lift.to ? 'true' : 'false');
-      b.style.setProperty('--g', Floors.cssGradient(floors[i].stops));
+      b.style.setProperty('--g', Floors.cssGradient(floors[i]));
     });
-    gradButtons.forEach((b, i) => b.setAttribute('aria-pressed', sameStops(Floors.GRADIENTS[i].stops, f.stops) ? 'true' : 'false'));
+    gradButtons.forEach((b, i) => b.setAttribute('aria-pressed', Floors.GRADIENTS[i].id === f.map ? 'true' : 'false'));
     $('upBtn').disabled = lift.to >= floors.length - 1;
     $('downBtn').disabled = lift.to <= 0;
   }
@@ -237,15 +237,14 @@
     });
   });
 
-  function applyStops(stops) {
-    Floors.setStops(floors[lift.to], stops);
+  function colourChanged() {
     syncUI();
     changed(true);
   }
-  ui.stops.forEach((el, k) => el.addEventListener('input', () => {
-    const stops = floors[lift.to].stops.slice();
-    stops[k] = el.value;
-    applyStops(stops);
+  // editing a stop turns the floor's gradient into a custom one (light, middle, dark)
+  ui.stops.forEach((el) => el.addEventListener('input', () => {
+    Floors.setCustom(floors[lift.to], ui.stops.map((s) => s.value));
+    colourChanged();
   }));
 
   ui.sweep.addEventListener('click', () => {
@@ -299,6 +298,15 @@
       lift.moving = false;
       current = lift.to;
     }
+  }
+
+  // Between floors the camera passes through a luminous mist that blends the two floors' light.
+  function mist() {
+    const lo = Math.floor(lift.pos), hi = Math.min(lo + 1, floors.length - 1);
+    const d = Math.abs(lift.pos - Math.round(lift.pos));
+    const t = clamp((d - 0.05) / 0.25, 0, 1);
+    const glow = (c) => c.map((v) => v * 0.75);
+    return { liftPos: lift.pos, mist: 0.94 * t * t * (3 - 2 * t), mistLo: glow(floors[lo].panelTop), mistHi: glow(floors[hi].panelTop) };
   }
 
   function pulse(t) {
@@ -369,12 +377,13 @@
         paramsChanged,
         debug: DEBUG,
         exposure: Floors.EXPOSURE,
-        bloomStrength: 0.09 + 0.12 * f.haze,
-        vignette: 0.2,
+        bloomStrength: 0.12 + 0.16 * f.haze,
+        vignette: 0.16,
+        ...mist(),
         fade: easeInOut(fade),
         minAlpha: 0.04,
         grade: 0.45,
-        lift: 0.035,
+        lift: 0.05,
       });
       paramsChanged = false;
       if (fade >= 1) adaptResolution(dt, now);

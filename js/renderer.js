@@ -83,7 +83,7 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([128, 128, 128, 255]));
-      this.sweep = { layers: 10, width: 0.26, feather: 0.48, period: 6.0, gain: 0.55, air: 1.0 };
+      this.sweep = { width: 0.85, period: 8.0, gain: 0.3, air: 0.6 };
       this.numFloors = NF;
       this.quality = this.opts.quality === undefined ? 1 : this.opts.quality;
       this.insetBottom = 0;
@@ -268,8 +268,9 @@
       p.f4v('uFloorP', this.floorData.params).f4v('uFloorQ', this.floorData.extra).f1('uPulse', st.pulse)
         .tex('uLut', 2, this.lut)
         .f3('uCamPos', st.camPos[0], st.camPos[1], st.camPos[2]).f1('uFocal', cam.focal).f2('uPrincipal', cam.cx, cam.cy)
-        .f1('uSweepPhase', ((st.time / sw.period) % 1 + 1) % 1).f1('uSweepLayers', sw.layers)
-        .f1('uSweepWidth', sw.width).f1('uSweepFeather', sw.feather).f1('uSweepGain', sw.gain).f1('uSweepAir', sw.air)
+        .f1('uSweepPhase', ((st.time / sw.period) % 1 + 1) % 1).f1('uSweepWidth', sw.width)
+        .f1('uSweepGain', sw.gain).f1('uSweepAir', sw.air).f2('uRes', iw, ih)
+        .f1('uMist', st.mist || 0).f1('uLiftPos', st.liftPos || 0).f3('uMistLo', ...(st.mistLo || [0, 0, 0])).f3('uMistHi', ...(st.mistHi || [0, 0, 0]))
         .tex('uHist0', 0, next.textures[0]).tex('uHist1', 1, next.textures[1]);
       this.hdr.bind();
       this.draw();

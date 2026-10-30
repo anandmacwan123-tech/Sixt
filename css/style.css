@@ -165,9 +165,9 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.25); }
 input[type="range"]:focus-visible { outline: none; }
 input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.25), 0 0 10px var(--accent); }
 
-.grads { display: flex; align-items: center; gap: 6px; }
+.grads { display: flex; align-items: center; gap: 4px; flex: none; }
 .grad {
-  width: 10px;
+  width: 9px;
   height: 24px;
   border-radius: 5px;
   border: 0;
@@ -180,7 +180,7 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px 
 .grad:hover, .grad:focus-visible { opacity: 1; transform: translateY(-2px); outline: none; }
 .grad[aria-pressed="true"] { opacity: 1; box-shadow: 0 0 0 2px rgba(10, 12, 16, 0.6), 0 0 0 3.5px #fff; }
 
-.stops { display: flex; align-items: center; gap: 5px; }
+.stops { display: flex; align-items: center; gap: 5px; flex: none; }
 .stop { position: relative; width: 16px; height: 16px; cursor: pointer; flex: none; }
 .stop input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; border: 0; padding: 0; }
 .stop span {
@@ -215,6 +215,8 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px 
   .sep { display: none; }
   .knob { gap: 6px; }
   input[type="range"] { width: 62px; }
+  .grads { gap: 3px; }
+  .grad { width: 7px; height: 22px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .rail, .tray, .loader { transition: none; }
