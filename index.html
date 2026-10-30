@@ -4,86 +4,64 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Atrium Light Tower</title>
-  <meta name="description" content="A real-time WebGL2 ray-traced light installation: a building of identical corridors, one colour per floor.">
+  <meta name="description" content="A real-time WebGL2 ray-traced light installation: a building of identical corridors, one gradient per floor, with a depth sweep.">
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
   <canvas id="scene" aria-label="Rendered room"></canvas>
 
-  <div id="loader" class="loader" role="status" aria-live="polite">
-    <div class="loader-inner">
-      <div class="loader-title">Building light</div>
-      <div class="loader-bar"><span id="loaderBar"></span></div>
-      <div class="loader-note" id="loaderNote">Compiling shaders…</div>
-    </div>
+  <div id="loader" class="loader" role="progressbar" aria-label="Loading" aria-valuemin="0" aria-valuemax="100">
+    <div class="loader-bar"><span id="loaderBar"></span></div>
   </div>
 
   <div id="error" class="error" hidden>
-    <div class="error-inner">
-      <div class="error-title">This browser can't render the room</div>
-      <pre id="errorText"></pre>
-    </div>
+    <pre id="errorText"></pre>
   </div>
 
-  <header class="brand" aria-hidden="true">
-    <span class="brand-mark"></span>
-    <span class="brand-name">Atrium</span>
-    <span class="brand-sep">/</span>
-    <span class="brand-floor" id="brandFloor">Floor 01</span>
-  </header>
-
-  <nav class="elevator" aria-label="Floors">
-    <button class="lift-btn" id="upBtn" aria-label="Go up one floor" title="Up (↑)">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
+  <!-- floors: right edge -->
+  <nav class="rail" id="rail" aria-label="Floors">
+    <button class="icon-btn" id="upBtn" type="button" aria-label="Up one floor">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14l5-5 5 5"/></svg>
     </button>
-    <ol class="floor-list" id="floorList"></ol>
-    <button class="lift-btn" id="downBtn" aria-label="Go down one floor" title="Down (↓)">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+    <ol class="rail-floors" id="floorList"></ol>
+    <button class="icon-btn" id="downBtn" type="button" aria-label="Down one floor">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5"/></svg>
     </button>
   </nav>
 
-  <div class="floor-title" id="floorTitle" aria-hidden="true">
-    <span class="ft-num" id="ftNum">01</span>
-    <span class="ft-name" id="ftName">Emerald</span>
-  </div>
-
-  <section class="dock" aria-label="Floor settings">
-    <div class="dock-floor">
-      <span class="dock-label">Floor</span>
-      <span class="dock-floor-name" id="dockFloor">01 · Emerald</span>
-    </div>
-
-    <label class="ctl">
-      <span class="ctl-head"><span class="dock-label" data-short="Light">Light intensity</span><output id="intensityOut">100%</output></span>
+  <!-- this floor's settings: bottom edge -->
+  <section class="tray" id="tray" aria-label="Floor settings">
+    <label class="knob" aria-label="Light intensity">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.6"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M5.6 18.4l1.6-1.6M16.8 7.2l1.6-1.6"/></svg>
       <input type="range" id="intensity" min="0" max="2" step="0.01" value="1">
     </label>
-
-    <label class="ctl">
-      <span class="ctl-head"><span class="dock-label" data-short="Gloss">Reflectiveness</span><output id="reflectOut">62%</output></span>
-      <input type="range" id="reflect" min="0" max="1" step="0.01" value="0.62">
+    <label class="knob" aria-label="Reflectiveness">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 15.5h16"/><path d="M7 15.5l5-9 5 9" /><path d="M8.5 18.5l3.5 2.5 3.5-2.5" opacity=".45"/></svg>
+      <input type="range" id="reflect" min="0" max="1" step="0.01" value="0.55">
+    </label>
+    <label class="knob" aria-label="Atmosphere">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h11a3 3 0 1 0-3-3"/><path d="M3 13h17"/><path d="M5 17h9a3 3 0 1 1-3 3"/></svg>
+      <input type="range" id="haze" min="0" max="1" step="0.01" value="0.32">
     </label>
 
-    <label class="ctl">
-      <span class="ctl-head"><span class="dock-label" data-short="Haze">Atmosphere</span><output id="hazeOut">22%</output></span>
-      <input type="range" id="haze" min="0" max="1" step="0.01" value="0.22">
-    </label>
+    <span class="sep" aria-hidden="true"></span>
 
-    <div class="ctl ctl-color">
-      <span class="ctl-head"><span class="dock-label" data-short="Colour">Room colour</span><output id="colorOut">#02EABE</output></span>
-      <div class="swatches" id="swatches">
-        <label class="swatch-custom" title="Pick any colour">
-          <input type="color" id="color" value="#02eabe" aria-label="Room colour">
-          <span class="swatch-ring"></span>
-        </label>
-      </div>
+    <div class="grads" id="grads" role="group" aria-label="Gradient"></div>
+    <div class="stops" role="group" aria-label="Gradient colours">
+      <label class="stop"><input type="color" id="stop0" aria-label="Top colour"><span></span></label>
+      <label class="stop"><input type="color" id="stop1" aria-label="Middle colour"><span></span></label>
+      <label class="stop"><input type="color" id="stop2" aria-label="Bottom colour"><span></span></label>
     </div>
 
-    <button class="reset" id="resetBtn" title="Reset this floor" aria-label="Reset this floor to its defaults">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4.5h4.5"/></svg>
+    <span class="sep" aria-hidden="true"></span>
+
+    <button class="icon-btn" id="sweepBtn" type="button" aria-label="Depth sweep" aria-pressed="true">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18h16"/><path d="M6.5 14h11" opacity=".75"/><path d="M9 10h6" opacity=".5"/><path d="M11 6h2" opacity=".3"/></svg>
+    </button>
+    <button class="icon-btn" id="resetBtn" type="button" aria-label="Reset this floor">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12a7 7 0 1 0 2.1-5"/><path d="M5 4.5v4h4"/></svg>
     </button>
   </section>
-
-  <div class="hint" id="hint">↑ ↓ to change floors</div>
 
   <script src="js/shaders.js"></script>
   <script src="js/gl.js"></script>

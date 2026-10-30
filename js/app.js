@@ -1,4 +1,4 @@
-/* Application: elevator navigation, per-floor controls and the render loop. */
+/* Application: elevator navigation, edge-revealed controls and the render loop. */
 (function () {
   'use strict';
 
@@ -10,8 +10,10 @@
   const EYE_H = 1.6;
   const PULSE_PERIOD = 3.2;
   const DOLLY = 3.2;
+  const EDGE_BOTTOM = 96;   // px from the bottom edge that reveal the settings tray
+  const EDGE_RIGHT = 84;    // px from the right edge that reveal the floors rail
 
-  // Test/debug options (used for headless captures): ?frames=N&scale=1&floor=0&debug=0&time=2.5
+  // Test/debug options (used for headless captures): ?frames=N&scale=1&floor=0&debug=0&time=2.5&ui=1
   const TEST_FRAMES = params.has('frames') ? parseInt(params.get('frames'), 10) : 0;
   const FIXED_TIME = params.has('time') ? parseFloat(params.get('time')) : null;
   const DEBUG = parseInt(params.get('debug') || '0', 10);
@@ -21,18 +23,19 @@
   const $ = (id) => document.getElementById(id);
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
-  const pad = (n) => String(n + 1).padStart(2, '0');
+  const sameStops = (a, b) => a.length === b.length && a.every((c, i) => c.toLowerCase() === b[i].toLowerCase());
 
   const floors = Floors.load();
   // optional overrides for captures
   ['intensity', 'reflect', 'haze', 'slitGlow'].forEach((k) => {
     if (params.has(k)) floors.forEach((f) => { f[k] = parseFloat(params.get(k)); });
   });
+  if (params.has('sweep')) floors.forEach((f) => { f.sweep = params.get('sweep') !== '0'; });
 
   let current = clamp(parseInt(params.get('floor') || '0', 10) || 0, 0, floors.length - 1);
   const lift = { pos: current, from: current, to: current, t0: 0, dur: 0, moving: false };
   if (params.has('liftPos')) {
-    // capture a frame mid-journey from floor 'floor' to 'floor'+1 (or -1)
+    // capture a frame mid-journey between two floors
     lift.pos = clamp(parseFloat(params.get('liftPos')), 0, floors.length - 1);
     lift.from = Math.floor(lift.pos); lift.to = Math.ceil(lift.pos); lift.moving = true;
     lift.dur = 1e12; lift.t0 = performance.now() - (lift.pos - lift.from) * 1e12;
@@ -54,6 +57,7 @@
     return;
   }
   renderer.setFloors(floors);
+  renderer.setGradients(Floors.buildLut(floors));
 
   function showError(err) {
     console.error(err);
@@ -75,12 +79,6 @@
       canvas.height = h;
     }
     if (!res.scale) res.scale = clamp(Math.sqrt(0.85e6 / (w * h)), 0.3, 1);
-    // keep the vanishing point in the part of the screen the dock doesn't cover (phones)
-    const dock = document.querySelector('.dock');
-    const cover = dock ? Math.max(0, window.innerHeight - dock.getBoundingClientRect().top) : 0;
-    document.documentElement.style.setProperty('--dock-h', Math.round(cover) + 'px');
-    const useInset = cover > 0.15 * window.innerHeight && (!TEST_FRAMES || params.has('ui'));
-    renderer.setViewInset(useInset ? Math.min(cover, 0.35 * window.innerHeight) * dpr : 0);
     renderer.resize(w, h, res.scale);
   }
 
@@ -122,44 +120,80 @@
 
   window.addEventListener('resize', () => { resize(); });
 
-  // ------------------------------------------------------------------ UI
-  const ui = {
-    intensity: $('intensity'), reflect: $('reflect'), haze: $('haze'), color: $('color'),
-    intensityOut: $('intensityOut'), reflectOut: $('reflectOut'), hazeOut: $('hazeOut'), colorOut: $('colorOut'),
-    swatches: $('swatches'), floorList: $('floorList'),
+  // ------------------------------------------------------------------ edge-revealed panels
+  const tray = $('tray'), rail = $('rail');
+  const panels = {
+    tray: { el: tray, cls: 'show-tray', timer: 0, on: false },
+    rail: { el: rail, cls: 'show-rail', timer: 0, on: false },
   };
+  function setPanel(name, on, holdMs) {
+    const p = panels[name];
+    clearTimeout(p.timer);
+    if (on) {
+      p.on = true;
+      document.body.classList.add(p.cls);
+      if (holdMs) p.timer = setTimeout(() => setPanel(name, false), holdMs);
+    } else {
+      p.timer = setTimeout(() => {
+        if (p.el.matches(':hover') || p.el.contains(document.activeElement)) return;
+        p.on = false;
+        document.body.classList.remove(p.cls);
+      }, 450);
+    }
+  }
+  if (params.has('ui')) { document.body.classList.add('show-tray', 'show-rail'); }
+  window.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'touch' || params.has('ui')) return;
+    setPanel('tray', e.clientY > window.innerHeight - EDGE_BOTTOM || tray.matches(':hover'));
+    setPanel('rail', e.clientX > window.innerWidth - EDGE_RIGHT || rail.matches(':hover'));
+  });
+  document.documentElement.addEventListener('pointerleave', () => { setPanel('tray', false); setPanel('rail', false); });
+  // touch: tap an edge to open its panel, tap the room to close
+  window.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch') return;
+    if (tray.contains(e.target) || rail.contains(e.target)) return;
+    if (e.clientY > window.innerHeight - 72) setPanel('tray', !panels.tray.on);
+    else if (e.clientX > window.innerWidth - 64) setPanel('rail', !panels.rail.on);
+    else { setPanel('tray', false); setPanel('rail', false); }
+  });
+  // keyboard users: a focused control keeps its panel open
+  document.addEventListener('focusin', (e) => {
+    if (tray.contains(e.target)) setPanel('tray', true);
+    if (rail.contains(e.target)) setPanel('rail', true);
+  });
+  document.addEventListener('focusout', () => { setPanel('tray', false); setPanel('rail', false); });
+
+  // ------------------------------------------------------------------ controls
+  const ui = { intensity: $('intensity'), reflect: $('reflect'), haze: $('haze'), sweep: $('sweepBtn'), stops: [$('stop0'), $('stop1'), $('stop2')] };
   let paramsChanged = false;
   let saveTimer = 0;
 
-  // floor buttons (top floor first)
+  // floor buttons, top floor first; each shows its own gradient
   const floorButtons = [];
   for (let i = floors.length - 1; i >= 0; i--) {
     const li = document.createElement('li');
     const b = document.createElement('button');
     b.type = 'button';
-    b.textContent = pad(i);
-    b.setAttribute('aria-label', 'Floor ' + (i + 1) + ', ' + floors[i].name);
+    b.setAttribute('aria-label', 'Floor ' + (i + 1));
     b.addEventListener('click', () => goTo(i));
     li.appendChild(b);
-    ui.floorList.appendChild(li);
+    $('floorList').appendChild(li);
     floorButtons[i] = b;
   }
-  // preset swatches
-  const swatchButtons = Floors.THEMES.map((t) => {
+  // the six gradients
+  const gradButtons = Floors.GRADIENTS.map((g) => {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'swatch';
-    b.style.background = t.color;
-    b.title = t.name;
-    b.setAttribute('aria-label', t.name);
-    b.addEventListener('click', () => applyColor(t.color));
-    ui.swatches.appendChild(b);
+    b.className = 'grad';
+    b.style.setProperty('--g', Floors.cssGradient(g.stops));
+    b.setAttribute('aria-label', g.name + ' gradient');
+    b.addEventListener('click', () => applyStops(g.stops));
+    $('grads').appendChild(b);
     return b;
   });
 
   function setRangeFill(el) {
-    const pct = ((el.value - el.min) / (el.max - el.min)) * 100;
-    el.style.setProperty('--pct', pct + '%');
+    el.style.setProperty('--pct', ((el.value - el.min) / (el.max - el.min)) * 100 + '%');
   }
 
   function syncUI() {
@@ -167,52 +201,58 @@
     ui.intensity.value = f.intensity;
     ui.reflect.value = f.reflect;
     ui.haze.value = f.haze;
-    ui.color.value = f.color;
     [ui.intensity, ui.reflect, ui.haze].forEach(setRangeFill);
-    ui.intensityOut.textContent = Math.round(f.intensity * 100) + '%';
-    ui.reflectOut.textContent = Math.round(f.reflect * 100) + '%';
-    ui.hazeOut.textContent = Math.round(f.haze * 100) + '%';
-    ui.colorOut.textContent = f.color.toUpperCase();
-    $('dockFloor').textContent = pad(lift.to) + ' · ' + f.name;
-    $('brandFloor').textContent = 'Floor ' + pad(lift.to);
-    $('ftNum').textContent = pad(lift.to);
-    $('ftName').textContent = f.name;
-    document.documentElement.style.setProperty('--accent', f.color);
+    ui.stops.forEach((el, k) => {
+      el.value = f.stops[k];
+      el.nextElementSibling.style.setProperty('--c', f.stops[k]);
+    });
+    ui.sweep.setAttribute('aria-pressed', f.sweep ? 'true' : 'false');
+    document.documentElement.style.setProperty('--accent', f.stops[0]);
     floorButtons.forEach((b, i) => {
       b.setAttribute('aria-current', i === lift.to ? 'true' : 'false');
-      b.style.setProperty('--dot', floors[i].color);
+      b.style.setProperty('--g', Floors.cssGradient(floors[i].stops));
     });
-    swatchButtons.forEach((b, i) => b.setAttribute('aria-pressed', Floors.THEMES[i].color === f.color.toLowerCase() ? 'true' : 'false'));
+    gradButtons.forEach((b, i) => b.setAttribute('aria-pressed', sameStops(Floors.GRADIENTS[i].stops, f.stops) ? 'true' : 'false'));
     $('upBtn').disabled = lift.to >= floors.length - 1;
     $('downBtn').disabled = lift.to <= 0;
   }
 
-  function changed(colorChanged) {
+  function changed(colorsChanged) {
     renderer.setFloors(floors);
-    if (colorChanged) renderer.invalidateProbes(lift.to, false);
+    if (colorsChanged) {
+      renderer.setGradients(Floors.buildLut(floors));
+      renderer.invalidateProbes(lift.to, false);
+    }
     paramsChanged = true;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => Floors.save(floors), 400);
   }
 
-  function bindRange(el, key, out, fmt) {
+  ['intensity', 'reflect', 'haze'].forEach((key) => {
+    const el = ui[key];
     el.addEventListener('input', () => {
       floors[lift.to][key] = parseFloat(el.value);
-      out.textContent = fmt(parseFloat(el.value));
       setRangeFill(el);
       changed(false);
     });
-  }
-  bindRange(ui.intensity, 'intensity', ui.intensityOut, (v) => Math.round(v * 100) + '%');
-  bindRange(ui.reflect, 'reflect', ui.reflectOut, (v) => Math.round(v * 100) + '%');
-  bindRange(ui.haze, 'haze', ui.hazeOut, (v) => Math.round(v * 100) + '%');
+  });
 
-  function applyColor(hex) {
-    Floors.setColor(floors[lift.to], hex);
+  function applyStops(stops) {
+    Floors.setStops(floors[lift.to], stops);
     syncUI();
     changed(true);
   }
-  ui.color.addEventListener('input', () => applyColor(ui.color.value));
+  ui.stops.forEach((el, k) => el.addEventListener('input', () => {
+    const stops = floors[lift.to].stops.slice();
+    stops[k] = el.value;
+    applyStops(stops);
+  }));
+
+  ui.sweep.addEventListener('click', () => {
+    floors[lift.to].sweep = !floors[lift.to].sweep;
+    syncUI();
+    changed(false);
+  });
 
   $('resetBtn').addEventListener('click', () => {
     Floors.reset(floors, lift.to);
@@ -221,7 +261,6 @@
   });
 
   // ------------------------------------------------------------------ elevator
-  let titleTimer = 0;
   function goTo(target) {
     target = clamp(target, 0, floors.length - 1);
     if (target === lift.to) return;
@@ -231,9 +270,7 @@
     lift.dur = 1300 + 380 * Math.min(Math.abs(lift.to - lift.from), 4);
     lift.moving = true;
     syncUI();
-    $('floorTitle').classList.add('show');
-    clearTimeout(titleTimer);
-    $('hint').classList.add('fade');
+    if (!panels.rail.on || panels.rail.timer) setPanel('rail', true, lift.dur + 900);
   }
   $('upBtn').addEventListener('click', () => goTo(lift.to + 1));
   $('downBtn').addEventListener('click', () => goTo(lift.to - 1));
@@ -241,7 +278,6 @@
   window.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowUp' || e.key === 'PageUp') { e.preventDefault(); goTo(lift.to + 1); }
     else if (e.key === 'ArrowDown' || e.key === 'PageDown') { e.preventDefault(); goTo(lift.to - 1); }
-    else if ((e.key === 'h' || e.key === 'H') && e.target === document.body) document.body.classList.toggle('ui-hidden');
   }, true);
 
   // vertical swipe on touch screens
@@ -262,7 +298,6 @@
       lift.pos = lift.to;
       lift.moving = false;
       current = lift.to;
-      titleTimer = setTimeout(() => $('floorTitle').classList.remove('show'), 900);
     }
   }
 
@@ -295,7 +330,6 @@
         if (!renderer.isReady()) { requestAnimationFrame(frame); return; }
         started = true;
         resize();
-        $('loaderNote').textContent = 'Simulating light bounces…';
       }
       updateLift(now);
       const time = FIXED_TIME !== null ? FIXED_TIME : (now - startTime) / 1000;
@@ -335,10 +369,12 @@
         paramsChanged,
         debug: DEBUG,
         exposure: Floors.EXPOSURE,
-        bloomStrength: 0.045 + 0.11 * f.haze,
-        vignette: 0.22,
+        bloomStrength: 0.09 + 0.12 * f.haze,
+        vignette: 0.2,
         fade: easeInOut(fade),
         minAlpha: 0.04,
+        grade: 0.45,
+        lift: 0.035,
       });
       paramsChanged = false;
       if (fade >= 1) adaptResolution(dt, now);
@@ -353,10 +389,6 @@
 
   document.addEventListener('visibilitychange', () => { last = performance.now(); });
   syncUI();
-  {
-    const dock = document.querySelector('.dock');
-    document.documentElement.style.setProperty('--dock-h', Math.round(window.innerHeight - dock.getBoundingClientRect().top) + 'px');
-  }
   requestAnimationFrame(frame);
 
   window.__atrium = { floors, renderer, goTo, lift };

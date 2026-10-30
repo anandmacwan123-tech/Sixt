@@ -19,6 +19,11 @@
  * Output is split in two buffers: "static" light (panel + LEDs, unit intensity) and
  * "slit" light (unit pulse). They are recombined each frame, so the pulse and the
  * light-intensity slider never smear the temporal accumulation.
+ *
+ * Colour comes from each floor's gradient texture (two rows per floor: strip A light->dark,
+ * strip B dark->light). After accumulation, the depth sweep (after DepthVideo / selfish-design)
+ * lights depth layers of the corridor in turn, and the final pass grades the image through the
+ * gradient for the soft look.
  */
 (function () {
   'use strict';
@@ -41,6 +46,7 @@ uniform vec4 uFloorP[NF];      // x: light intensity, y: reflectiveness, z: haze
 uniform int uNumFloors;
 uniform float uTime;
 uniform int uFrame;
+uniform sampler2D uLut;    // gradient texture: row 2f = strip A, row 2f+1 = strip B (sRGB)
 uniform int uNumSlits;     // 12 (uniform so compilers keep the loops rolled)
 uniform int uFogSteps;
 uniform int uQuality;      // 1: ray traced reflections + shadows, 0: analytic fallback for slow GPUs
@@ -325,11 +331,27 @@ int materialAt(vec3 p, vec3 n, out float slitId, out vec2 slitUV) {
   return MAT_ROOM;
 }
 
+// ---------------------------------------------------------------- gradients
+vec3 gradA(int f, float t) { return textureLod(uLut, vec2(t, (float(f * 2) + 0.5) / float(NF * 2)), 0.0).rgb; }
+vec3 gradB(int f, float t) { return textureLod(uLut, vec2(t, (float(f * 2 + 1) + 0.5) / float(NF * 2)), 0.0).rgb; }
+// HDR radiance that displays as the given colour (inverse of the final tone curve)
+float acesInv(float y) {
+  y = min(y, 0.985);
+  float a = 2.51 - 2.43 * y, b = 0.03 - 0.59 * y, c = -0.14 * y;
+  return (-b + sqrt(max(b * b - 4.0 * a * c, 0.0))) / (2.0 * a);
+}
+vec3 displayToHdr(vec3 c) { float m = max(max(c.r, c.g), max(c.b, 1e-4)); return c * (acesInv(m) / m); }
+
 // ---------------------------------------------------------------- lights
+// The lightbox shows the light half of the floor's gradient, top to bottom.
 vec3 panelEmission(vec3 p, int f) {
   float u = clamp(p.x / PANEL_HW, -1.0, 1.0);
   float v = clamp((p.y - PANEL_Y0) / (PANEL_Y1 - PANEL_Y0), 0.0, 1.0);
-  vec3 c = mix(uPanelBot[f], uPanelTop[f], smoothstep(0.0, 1.0, v));
+  // keep it luminous even where the gradient's middle is a dark grey (hue from the gradient)
+  vec3 g = gradA(f, 0.66 * (1.0 - v));
+  vec3 g1 = gradA(f, 0.0);
+  float m = max(max(g.r, g.g), max(g.b, 1e-3)), m1 = max(max(g1.r, g1.g), g1.b);
+  vec3 c = displayToHdr(g * max(1.0, 0.92 * m1 / m));
   float fall = (1.0 - 0.5 * u * u) * (1.0 + 0.1 * (v - 0.5));
   return c * fall;
 }
@@ -962,18 +984,104 @@ void main() {
 }
 `;
 
-  // ------------------------------------------------------------------ combine static + pulsing slit light
+  // ------------------------------------------------------------------ combine + depth sweep
+  // Depth Sweep after DepthVideo / selfish-design: the corridor depth is cut into N layers, an
+  // eased pulse travels through them (wrapping), the layer masks are feathered, and the swept
+  // layers are recoloured with the floor's gradient (strip B) and glow. The geometry gives exact
+  // depth, so it also lights the haze inside each layer (analytic slab integral along the ray).
   const combinePass = /* glsl */ `
 uniform sampler2D uHist0;
 uniform sampler2D uHist1;
+uniform sampler2D uLut;
 uniform float uPulse;
+uniform vec4 uFloorQ[NF];      // x: sweep on
+uniform vec3 uCamPos;
+uniform float uFocal;
+uniform vec2 uPrincipal;
+uniform float uSweepPhase;     // 0..1 position of the pulse in the loop
+uniform float uSweepLayers;
+uniform float uSweepWidth;     // pulse width as a share of the loop
+uniform float uSweepFeather;   // soft edge, in layer units (0..0.5)
+uniform float uSweepGain;
+uniform float uSweepAir;
 out vec4 outColor;
+
+const float Z_START = 1.2;
+const float Z_STOP = 17.05;
+const float FLOOR_H = 5.2;
+
+vec3 gradB(int f, float t) { return textureLod(uLut, vec2(t, (float(f * 2 + 1) + 0.5) / float(NF * 2)), 0.0).rgb; }
+float acesInv(float y) {
+  y = min(y, 0.985);
+  float a = 2.51 - 2.43 * y, b = 0.03 - 0.59 * y, c = -0.14 * y;
+  return (-b + sqrt(max(b * b - 4.0 * a * c, 0.0))) / (2.0 * a);
+}
+vec3 displayToHdr(vec3 c) { float m = max(max(c.r, c.g), max(c.b, 1e-4)); return c * (acesInv(m) / m); }
+
+float easeInOut(float x) { return x * x * (3.0 - 2.0 * x); }
+// eased tent centred on layer i, wrapping around the loop
+float layerPulse(float i) {
+  float diff = uSweepPhase - (i + 0.5) / uSweepLayers;
+  diff -= floor(diff + 0.5);
+  float hw = 0.5 * uSweepWidth;
+  float ad = abs(diff);
+  return ad >= hw ? 0.0 : easeInOut(1.0 - ad / hw);
+}
+// feathered box for layer j (the masks of neighbouring layers sum to one)
+float layerMask(float x, float j) {
+  float fe = uSweepFeather;
+  return smoothstep(j - fe, j + fe, x) - smoothstep(j + 1.0 - fe, j + 1.0 + fe, x);
+}
+float sweepAt(float zn) {
+  float x = zn * uSweepLayers;
+  float l = floor(x);
+  float a = 0.0;
+  for (int k = -1; k <= 1; k++) {
+    float j = l + float(k);
+    if (j < 0.0 || j >= uSweepLayers) continue;
+    a += layerPulse(j) * layerMask(x, j);
+  }
+  return a;
+}
+vec3 bandColour(int f, float s) { return displayToHdr(gradB(f, 0.5 + 0.5 * s)); }
+
 void main() {
   ivec2 c = ivec2(gl_FragCoord.xy);
   vec4 a = texelFetch(uHist0, c, 0);
   vec4 b = texelFetch(uHist1, c, 0);
   int f = clamp(int(b.a + 0.5), 0, NF - 1);
-  outColor = vec4(a.rgb * uFloorP[f].x + b.rgb * (uFloorP[f].w * uPulse), 1.0);
+  vec3 col = a.rgb * uFloorP[f].x + b.rgb * (uFloorP[f].w * uPulse);
+
+  if (uFloorQ[f].x > 0.5) {
+    vec3 rd = normalize(vec3((gl_FragCoord.x - uPrincipal.x) / uFocal, (gl_FragCoord.y - uPrincipal.y) / uFocal, 1.0));
+    vec3 wp = uCamPos + rd * a.a;
+    float L = Z_STOP - Z_START;
+    float ly = wp.y - float(f) * FLOOR_H;
+    float zn = (wp.z - Z_START) / L;
+    if (zn > 0.0 && zn < 1.03 && ly > -0.05 && ly < 4.7) {
+      float sw = sweepAt(min(zn, 0.9999));
+      vec3 sc = bandColour(f, sw);
+      col = mix(col, sc * 0.5, 0.3 * sw) + sc * (uSweepGain * sw);
+    }
+    // haze inside the swept layers along the view ray
+    float z0 = max(Z_START, uCamPos.z), z1 = min(wp.z, Z_STOP);
+    if (z1 > z0 && rd.z > 1e-3) {
+      float N = uSweepLayers;
+      float centre = floor(uSweepPhase * N);
+      vec3 air = vec3(0.0);
+      for (int k = -2; k <= 2; k++) {
+        float j = centre + float(k);
+        j -= N * floor(j / N);
+        float p = layerPulse(j);
+        if (p <= 0.0) continue;
+        float za = Z_START + j * L / N;
+        float ov = max(0.0, min(z1, za + L / N) - max(z0, za));
+        air += bandColour(f, p) * (p * ov);
+      }
+      col += air * ((0.02 + 0.07 * uFloorP[f].z) * uSweepAir / rd.z);
+    }
+  }
+  outColor = vec4(col, float(f));
 }
 `;
 
@@ -1026,6 +1134,9 @@ void main() {
   const finalPass = /* glsl */ `
 uniform sampler2D uHdr;
 uniform sampler2D uBloom;
+uniform sampler2D uLut;
+uniform float uGrade;
+uniform float uLift;
 uniform vec2 uOutRes;
 uniform float uExposure;
 uniform float uBloomStrength;
@@ -1078,6 +1189,17 @@ void main() {
   vec3 bloom = texture(uBloom, uv).rgb;
   hdr = mix(hdr, bloom * (1.0 / 6.0), uBloomStrength);
   vec3 c = tonemap(hdr * uExposure);
+  // soft gradient grade: colour from the floor's gradient at this tone, brightness kept
+  int f = clamp(int(textureLod(uHdr, uv, 0.0).a + 0.5), 0, NF - 1);
+  float rowA = (float(f * 2) + 0.5) / float(NF * 2);
+  float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  vec3 g = textureLod(uLut, vec2(1.0 - clamp(pow(lum, 0.75) * 1.1, 0.0, 1.0), rowA), 0.0).rgb;
+  float gl = dot(g, vec3(0.2126, 0.7152, 0.0722));
+  vec3 gs = min(g * (lum / max(gl, 0.02)), vec3(1.0));
+  c = mix(c, gs, uGrade);
+  // lifted, tinted shadows instead of black
+  vec3 floorTint = textureLod(uLut, vec2(0.9, rowA), 0.0).rgb;
+  c = c * (1.0 - uLift) + floorTint * uLift;
   vec2 q = uv - 0.5;
   c *= 1.0 - uVignette * dot(q, q) * 1.6;
   c = toSRGB(clamp(c, 0.0, 1.0));
@@ -1094,6 +1216,6 @@ void main() {
     combine: header + '#define NF 8\nuniform vec4 uFloorP[NF];\n' + combinePass,
     bloomDown: header + bloomDown,
     bloomUp: header + bloomUp,
-    final: header + 'float ign(vec2 px) { return fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715)))); }\n' + finalPass,
+    final: header + '#define NF 8\nfloat ign(vec2 px) { return fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715)))); }\n' + finalPass,
   };
 })();

@@ -73,8 +73,17 @@
       this.prevCam = null;
       this.floorData = {
         albedo: new Float32Array(NF * 3), panelTop: new Float32Array(NF * 3), panelBot: new Float32Array(NF * 3),
-        led: new Float32Array(NF * 3), params: new Float32Array(NF * 4),
+        led: new Float32Array(NF * 3), params: new Float32Array(NF * 4), extra: new Float32Array(NF * 4),
       };
+      // gradient texture (two rows per floor), sampled as linear colour
+      this.lut = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this.lut);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([128, 128, 128, 255]));
+      this.sweep = { layers: 10, width: 0.26, feather: 0.48, period: 6.0, gain: 0.55, air: 1.0 };
       this.numFloors = NF;
       this.quality = this.opts.quality === undefined ? 1 : this.opts.quality;
       this.insetBottom = 0;
@@ -104,7 +113,16 @@
         d.panelBot.set(fl.panelBot, i * 3);
         d.led.set(fl.led, i * 3);
         d.params.set([fl.intensity, fl.reflect, fl.haze, fl.slitGlow], i * 4);
+        d.extra.set([fl.sweep ? 1 : 0, 0, 0, 0], i * 4);
       }
+    }
+
+    // Upload the floors' gradient texture ({data, width, height} of sRGB bytes).
+    setGradients(lut) {
+      const gl = this.gl;
+      gl.bindTexture(gl.TEXTURE_2D, this.lut);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, lut.width, lut.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, lut.data);
     }
 
     // Colours of a floor changed: keep its current GI as the starting point and re-converge.
@@ -169,7 +187,7 @@
       p.f3v('uAlbedo', d.albedo).f3v('uPanelTop', d.panelTop).f3v('uPanelBot', d.panelBot).f3v('uLedCol', d.led)
         .f4v('uFloorP', d.params).i1('uNumFloors', this.numFloors).f1('uTime', time).i1('uFrame', frame)
         .i1('uNumSlits', NUM_SLITS).i1('uFogSteps', this.quality > 0 ? this.opts.fogSteps : 6)
-        .i1('uQuality', this.quality);
+        .i1('uQuality', this.quality).tex('uLut', 5, this.lut);
     }
 
     draw() { this.gl.drawArrays(this.gl.TRIANGLES, 0, 3); }
@@ -245,8 +263,13 @@
       this.histValid = true;
 
       // ---- combine static + slit light
+      const sw = this.sweep;
       p = this.programs.combine.use();
-      p.f4v('uFloorP', this.floorData.params).f1('uPulse', st.pulse)
+      p.f4v('uFloorP', this.floorData.params).f4v('uFloorQ', this.floorData.extra).f1('uPulse', st.pulse)
+        .tex('uLut', 2, this.lut)
+        .f3('uCamPos', st.camPos[0], st.camPos[1], st.camPos[2]).f1('uFocal', cam.focal).f2('uPrincipal', cam.cx, cam.cy)
+        .f1('uSweepPhase', ((st.time / sw.period) % 1 + 1) % 1).f1('uSweepLayers', sw.layers)
+        .f1('uSweepWidth', sw.width).f1('uSweepFeather', sw.feather).f1('uSweepGain', sw.gain).f1('uSweepAir', sw.air)
         .tex('uHist0', 0, next.textures[0]).tex('uHist1', 1, next.textures[1]);
       this.hdr.bind();
       this.draw();
@@ -273,7 +296,7 @@
         this.draw();
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE);
-        p.tex('uSrc', 0, src.tex).f2('uSrcTexel', 1 / src.w, 1 / src.h).f2('uDstRes', dst.w, dst.h).f1('uRadius', 1.0);
+        p.tex('uSrc', 0, src.tex).f2('uSrcTexel', 1 / src.w, 1 / src.h).f2('uDstRes', dst.w, dst.h).f1('uRadius', 1.6);
         this.draw();
         gl.disable(gl.BLEND);
         src = dst;
@@ -285,7 +308,8 @@
       p = this.programs.final.use();
       p.tex('uHdr', 0, this.hdr.tex).tex('uBloom', 1, this.bloomUp[0].tex)
         .f2('uOutRes', this.outW, this.outH).f1('uExposure', st.exposure)
-        .f1('uBloomStrength', st.bloomStrength).f1('uVignette', st.vignette).f1('uFade', st.fade);
+        .f1('uBloomStrength', st.bloomStrength).f1('uVignette', st.vignette).f1('uFade', st.fade)
+        .tex('uLut', 2, this.lut).f1('uGrade', st.grade === undefined ? 0.45 : st.grade).f1('uLift', st.lift === undefined ? 0.035 : st.lift);
       this.draw();
 
       this.prevCam = st.camPos.slice();
