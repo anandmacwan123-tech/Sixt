@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Atrium Light Tower</title>
+  <meta name="description" content="A real-time WebGL2 ray-traced light installation: a building of identical corridors, one colour per floor.">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <canvas id="scene" aria-label="Rendered room"></canvas>
+
+  <div id="loader" class="loader" role="status" aria-live="polite">
+    <div class="loader-inner">
+      <div class="loader-title">Building light</div>
+      <div class="loader-bar"><span id="loaderBar"></span></div>
+      <div class="loader-note" id="loaderNote">Compiling shaders…</div>
+    </div>
+  </div>
+
+  <div id="error" class="error" hidden>
+    <div class="error-inner">
+      <div class="error-title">This browser can't render the room</div>
+      <pre id="errorText"></pre>
+    </div>
+  </div>
+
+  <header class="brand" aria-hidden="true">
+    <span class="brand-mark"></span>
+    <span class="brand-name">Atrium</span>
+    <span class="brand-sep">/</span>
+    <span class="brand-floor" id="brandFloor">Floor 01</span>
+  </header>
+
+  <nav class="elevator" aria-label="Floors">
+    <button class="lift-btn" id="upBtn" aria-label="Go up one floor" title="Up (↑)">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
+    </button>
+    <ol class="floor-list" id="floorList"></ol>
+    <button class="lift-btn" id="downBtn" aria-label="Go down one floor" title="Down (↓)">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+    </button>
+  </nav>
+
+  <div class="floor-title" id="floorTitle" aria-hidden="true">
+    <span class="ft-num" id="ftNum">01</span>
+    <span class="ft-name" id="ftName">Emerald</span>
+  </div>
+
+  <section class="dock" aria-label="Floor settings">
+    <div class="dock-floor">
+      <span class="dock-label">Floor</span>
+      <span class="dock-floor-name" id="dockFloor">01 · Emerald</span>
+    </div>
+
+    <label class="ctl">
+      <span class="ctl-head"><span class="dock-label" data-short="Light">Light intensity</span><output id="intensityOut">100%</output></span>
+      <input type="range" id="intensity" min="0" max="2" step="0.01" value="1">
+    </label>
+
+    <label class="ctl">
+      <span class="ctl-head"><span class="dock-label" data-short="Gloss">Reflectiveness</span><output id="reflectOut">62%</output></span>
+      <input type="range" id="reflect" min="0" max="1" step="0.01" value="0.62">
+    </label>
+
+    <label class="ctl">
+      <span class="ctl-head"><span class="dock-label" data-short="Haze">Atmosphere</span><output id="hazeOut">22%</output></span>
+      <input type="range" id="haze" min="0" max="1" step="0.01" value="0.22">
+    </label>
+
+    <div class="ctl ctl-color">
+      <span class="ctl-head"><span class="dock-label" data-short="Colour">Room colour</span><output id="colorOut">#02EABE</output></span>
+      <div class="swatches" id="swatches">
+        <label class="swatch-custom" title="Pick any colour">
+          <input type="color" id="color" value="#02eabe" aria-label="Room colour">
+          <span class="swatch-ring"></span>
+        </label>
+      </div>
+    </div>
+
+    <button class="reset" id="resetBtn" title="Reset this floor" aria-label="Reset this floor to its defaults">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4.5h4.5"/></svg>
+    </button>
+  </section>
+
+  <div class="hint" id="hint">↑ ↓ to change floors</div>
+
+  <script src="js/shaders.js"></script>
+  <script src="js/gl.js"></script>
+  <script src="js/renderer.js"></script>
+  <script src="js/floors.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
