@@ -107,7 +107,12 @@
       const full = list().length >= Scene.MAX_PER_FLOOR;
       shapeButtons.forEach((b) => { b.disabled = full; });
     }
-    insertBtn.addEventListener('click', () => { refreshShapes(); openShapes(!tray.classList.contains('open-shapes')); });
+    insertBtn.addEventListener('click', () => {
+      const on = !tray.classList.contains('open-shapes');
+      refreshShapes();
+      if (on && st.sel >= 0) select(-1);   // the palette sits where the object bar is
+      openShapes(on);
+    });
     shapeButtons.forEach((b) => b.addEventListener('click', () => {
       openShapes(false);
       beginPlace(parseInt(b.dataset.shape, 10), null);

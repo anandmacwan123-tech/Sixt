@@ -19,7 +19,8 @@ switches to a cheaper reflection mode.
 
 ## Using it
 
-The interface has no text. Everything stays hidden until the pointer reaches an edge. On touch
+The interface has no text and is always light (white frosted glass, dark icons), whatever the
+system theme or the floor's colours. Everything stays hidden until the pointer reaches an edge. On touch
 screens, tap the small handle on an edge instead.
 
 - **Right edge**: the floors. Each pill shows that floor's gradient. You can also use `↑` / `↓`
