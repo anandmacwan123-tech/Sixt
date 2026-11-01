@@ -10,6 +10,10 @@
 <body>
   <canvas id="scene" aria-label="Rendered room"></canvas>
 
+  <!-- progressive blur behind the edge controls -->
+  <div class="pblur pblur-bottom" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="pblur pblur-right" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+
   <div id="loader" class="loader" role="progressbar" aria-label="Loading" aria-valuemin="0" aria-valuemax="100">
     <div class="loader-bar"><span id="loaderBar"></span></div>
   </div>

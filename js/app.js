@@ -196,7 +196,7 @@
   });
 
   function setRangeFill(el) {
-    el.style.setProperty('--pct', ((el.value - el.min) / (el.max - el.min)) * 100 + '%');
+    (el.closest('.knob') || el).style.setProperty('--pct', ((el.value - el.min) / (el.max - el.min)) * 100 + '%');
   }
 
   function syncUI() {

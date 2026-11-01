@@ -69,7 +69,7 @@
       }
       sync();
     }
-    function fill(el) { el.style.setProperty('--pct', ((el.value - el.min) / (el.max - el.min)) * 100 + '%'); }
+    function fill(el) { (el.closest('.knob') || el).style.setProperty('--pct', ((el.value - el.min) / (el.max - el.min)) * 100 + '%'); }
 
     function edit(fn) {
       const o = list()[st.sel];
