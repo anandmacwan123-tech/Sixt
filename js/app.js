@@ -196,7 +196,7 @@
   });
 
   function setRangeFill(el) {
-    (el.closest('.knob') || el).style.setProperty('--pct', ((el.value - el.min) / (el.max - el.min)) * 100 + '%');
+    el.style.setProperty('--pct', ((el.value - el.min) / (el.max - el.min)) * 100 + '%');
   }
 
   function syncUI() {
@@ -211,6 +211,7 @@
       el.nextElementSibling.style.setProperty('--c', stops[k]);
     });
     ui.sweep.setAttribute('aria-pressed', f.sweep ? 'true' : 'false');
+    document.documentElement.style.setProperty('--accent', stops[0]);
     floorButtons.forEach((b, i) => {
       b.setAttribute('aria-current', i === lift.to ? 'true' : 'false');
       b.style.setProperty('--g', Floors.cssGradient(floors[i]));

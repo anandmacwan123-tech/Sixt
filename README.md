@@ -19,10 +19,7 @@ switches to a cheaper reflection mode.
 
 ## Using it
 
-The interface has no text and one fixed palette, whatever the system theme or the floor's colours:
-white pills with hairline borders, grey icons that turn black when active, and a black outline
-traced from the left (on sliders it shows the value: drag anywhere on the pill). A progressive
-blur behind each edge keeps it legible. Everything stays hidden until the pointer reaches an edge. On touch
+The interface has no text. Everything stays hidden until the pointer reaches an edge. On touch
 screens, tap the small handle on an edge instead.
 
 - **Right edge**: the floors. Each pill shows that floor's gradient. You can also use `↑` / `↓`
